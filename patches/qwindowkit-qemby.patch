@@ -1,0 +1,127 @@
+diff --git a/examples/shared/widgetframe/windowbar.cpp b/examples/shared/widgetframe/windowbar.cpp
+index 38a398e..5a86690 100644
+--- a/examples/shared/widgetframe/windowbar.cpp
++++ b/examples/shared/widgetframe/windowbar.cpp
+@@ -180,6 +180,71 @@ namespace QWK {
+         connect(btn, &QAbstractButton::clicked, this, &WindowBar::closeRequested);
+     }
+ 
++    // ---- qEmby customizations (reconstructed) ----
++    QAbstractButton *WindowBar::backButton() const {
++        Q_D(const WindowBar);
++        return static_cast<QAbstractButton *>(d->widgetAt(WindowBarPrivate::BackButton));
++    }
++
++    QAbstractButton *WindowBar::homeButton() const {
++        Q_D(const WindowBar);
++        return static_cast<QAbstractButton *>(d->widgetAt(WindowBarPrivate::HomeButton));
++    }
++
++    QAbstractButton *WindowBar::favButton() const {
++        Q_D(const WindowBar);
++        return static_cast<QAbstractButton *>(d->widgetAt(WindowBarPrivate::FavButton));
++    }
++
++    QWidget *WindowBar::centerWidget() const {
++        Q_D(const WindowBar);
++        return d->widgetAt(WindowBarPrivate::CenterWidget);
++    }
++
++    void WindowBar::setBackButton(QAbstractButton *btn) {
++        Q_D(WindowBar);
++        auto org = static_cast<QAbstractButton *>(d->takeWidgetAt(WindowBarPrivate::BackButton));
++        if (org)
++            org->deleteLater();
++        if (!btn)
++            return;
++        d->setWidgetAt(WindowBarPrivate::BackButton, btn);
++        btn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
++    }
++
++    void WindowBar::setHomeButton(QAbstractButton *btn) {
++        Q_D(WindowBar);
++        auto org = static_cast<QAbstractButton *>(d->takeWidgetAt(WindowBarPrivate::HomeButton));
++        if (org)
++            org->deleteLater();
++        if (!btn)
++            return;
++        d->setWidgetAt(WindowBarPrivate::HomeButton, btn);
++        btn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
++    }
++
++    void WindowBar::setFavButton(QAbstractButton *btn) {
++        Q_D(WindowBar);
++        auto org = static_cast<QAbstractButton *>(d->takeWidgetAt(WindowBarPrivate::FavButton));
++        if (org)
++            org->deleteLater();
++        if (!btn)
++            return;
++        d->setWidgetAt(WindowBarPrivate::FavButton, btn);
++        btn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
++    }
++
++    void WindowBar::setCenterWidget(QWidget *widget) {
++        Q_D(WindowBar);
++        auto org = d->takeWidgetAt(WindowBarPrivate::CenterWidget);
++        if (org)
++            org->deleteLater();
++        if (!widget)
++            return;
++        d->setWidgetAt(WindowBarPrivate::CenterWidget, widget);
++        widget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
++    }
++
+     QMenuBar *WindowBar::takeMenuBar() {
+         Q_D(WindowBar);
+         return static_cast<QMenuBar *>(d->takeWidgetAt(WindowBarPrivate::MenuWidget));
+diff --git a/examples/shared/widgetframe/windowbar.h b/examples/shared/widgetframe/windowbar.h
+index e9cf04c..48b7387 100644
+--- a/examples/shared/widgetframe/windowbar.h
++++ b/examples/shared/widgetframe/windowbar.h
+@@ -38,6 +38,16 @@ namespace QWK {
+         void setMaxButton(QAbstractButton *btn);
+         void setCloseButton(QAbstractButton *btn);
+ 
++        // qEmby customizations (reconstructed: upstream fork was not committed)
++        QAbstractButton *backButton() const;
++        QAbstractButton *homeButton() const;
++        QAbstractButton *favButton() const;
++        QWidget *centerWidget() const;
++        void setBackButton(QAbstractButton *btn);
++        void setHomeButton(QAbstractButton *btn);
++        void setFavButton(QAbstractButton *btn);
++        void setCenterWidget(QWidget *widget);
++
+         QMenuBar *takeMenuBar();
+         QLabel *takeTitleLabel();
+         QAbstractButton *takeIconButton();
+diff --git a/examples/shared/widgetframe/windowbar_p.h b/examples/shared/widgetframe/windowbar_p.h
+index 35422ae..9518ae0 100644
+--- a/examples/shared/widgetframe/windowbar_p.h
++++ b/examples/shared/widgetframe/windowbar_p.h
+@@ -28,7 +28,11 @@ namespace QWK {
+         enum WindowBarItem {
+             IconButton,
+             MenuWidget,
++            BackButton,
++            HomeButton,
++            FavButton,
+             TitleLabel,
++            CenterWidget,
+             PinButton,
+             MinimizeButton,
+             MaximizeButton,
+diff --git a/src/core/windowagentbase.h b/src/core/windowagentbase.h
+index 5b25528..153d8df 100644
+--- a/src/core/windowagentbase.h
++++ b/src/core/windowagentbase.h
+@@ -27,6 +27,9 @@ namespace QWK {
+             Help,
+             Minimize,
+             Maximize,
++            Back,
++            Home,
++            Fav,
+             Close,
+         };
+         Q_ENUM(SystemButton)

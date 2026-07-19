@@ -1,0 +1,48 @@
+diff --git a/src/qEmbyApp/resources/i18n/qEmby_zh_CN.ts b/src/qEmbyApp/resources/i18n/qEmby_zh_CN.ts
+index 1710024..40115f2 100644
+--- a/src/qEmbyApp/resources/i18n/qEmby_zh_CN.ts
++++ b/src/qEmbyApp/resources/i18n/qEmby_zh_CN.ts
+@@ -45,8 +45,8 @@
+         <translation>服务器地址 (例如 192.168.1.1 或域名)</translation>
+     </message>
+     <message>
+-        <source>Server URL (e.g. example.com, example.com/emby or https:
+-        <translation>服务器 URL（例如 example.com、example.com/emby 或 https:
++        <source>Server URL (e.g. example.com, example.com/emby or https:</source>
++        <translation>服务器 URL（例如 example.com、example.com/emby 或 https:</translation>
+     </message>
+     <message>
+         <source>Server URL</source>
+@@ -187,8 +187,8 @@ This action cannot be undone.</source>
+         <translation>请输入有效的端口号。</translation>
+     </message>
+     <message>
+-        <source>Server URL must use http:
+-        <translation>服务器 URL 必须使用 http:
++        <source>Server URL must use http:</source>
++        <translation>服务器 URL 必须使用 http:</translation>
+     </message>
+     <message>
+         <source>Connecting...</source>
+@@ -1145,8 +1145,8 @@ This action cannot be undone.</source>
+         <translation>请为“%2”的 %1 图像粘贴一个图片地址。</translation>
+     </message>
+     <message>
+-        <source>https:
+-        <translation>https:
++        <source>https:</source>
++        <translation>https:</translation>
+     </message>
+     <message>
+         <source>Save Image</source>
+@@ -3219,8 +3219,8 @@ This action cannot be undone.</source>
+         <translation>URL路径替换 每行一条规则：源路径 =&gt; 目标路径</translation>
+     </message>
+     <message>
+-        <source>e.g., http:
+-        <translation>例如 http:
++        <source>e.g., http:</source>
++        <translation>例如 http:</translation>
+     </message>
+ </context>
+ 
