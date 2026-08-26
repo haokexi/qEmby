@@ -18,7 +18,9 @@ public:
     
     void shutdown();
 
-    void loadMedia(const QString &url, const QString &serverId = QString());
+    void loadMedia(const QString &url, const QString &serverId = QString(),
+                   bool forceRelay = false);
+    bool retryWithRelay();
     void play();
     void pause();
     void stop();
@@ -47,16 +49,21 @@ private slots:
 private:
     static void onMpvRenderUpdate(void *ctx);
     static void *getProcAddress(void *ctx, const char *name);
-    void loadMediaNow(const QString &url, const QString &serverId, bool wasPending);
+    void loadMediaNow(const QString &url, const QString &serverId,
+                      bool wasPending, bool forceRelay = false);
 
     MpvController *m_controller;
     MpvHttpStreamRelay *m_streamRelay = nullptr;
     bool m_usingStreamRelay = false;
+    bool m_relayRetryAttempted = false;
     mpv_render_context *m_mpv_gl;
 
     
     QString m_pendingUrl;
-    QString m_pendingServerId;  
+    QString m_pendingServerId;
+    bool m_pendingForceRelay = false;
+    QString m_currentUrl;
+    QString m_currentServerId;
 };
 
 #endif 

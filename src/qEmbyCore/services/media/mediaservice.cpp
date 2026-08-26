@@ -1730,6 +1730,51 @@ QString MediaService::getStreamUrl(const QString &itemId, const MediaSourceInfo 
     return getStreamUrl(itemId, sourceInfo.id);
 }
 
+QString MediaService::getSessionStreamUrl(const QString &streamUrl,
+                                          const QString &playSessionId) const
+{
+    if (!m_serverManager || streamUrl.isEmpty() || playSessionId.isEmpty())
+    {
+        return streamUrl;
+    }
+
+    const ServerProfile profile = m_serverManager->activeProfile();
+    const QUrl serverUrl(profile.url);
+    QUrl playbackUrl(streamUrl);
+    const QString scheme = playbackUrl.scheme().toLower();
+    const int defaultPort = scheme == QStringLiteral("https") ? 443 : 80;
+    const bool isServerUrl = playbackUrl.isValid() && serverUrl.isValid() &&
+                             (scheme == QStringLiteral("http") ||
+                              scheme == QStringLiteral("https")) &&
+                             playbackUrl.scheme().compare(serverUrl.scheme(), Qt::CaseInsensitive) == 0 &&
+                             playbackUrl.host().compare(serverUrl.host(), Qt::CaseInsensitive) == 0 &&
+                             playbackUrl.port(defaultPort) == serverUrl.port(defaultPort);
+    if (!isServerUrl)
+    {
+        return streamUrl;
+    }
+
+    QUrlQuery query(playbackUrl);
+    query.removeAllQueryItems(QStringLiteral("PlaySessionId"));
+    query.removeAllQueryItems(QStringLiteral("playSessionId"));
+    query.addQueryItem(QStringLiteral("PlaySessionId"), playSessionId);
+
+    if (!profile.userId.isEmpty() && !query.hasQueryItem(QStringLiteral("UserId")))
+    {
+        query.addQueryItem(QStringLiteral("UserId"), profile.userId);
+    }
+    if (!profile.accessToken.isEmpty() &&
+        !query.hasQueryItem(QStringLiteral("api_key")) &&
+        !query.hasQueryItem(QStringLiteral("X-Emby-Token")) &&
+        !query.hasQueryItem(QStringLiteral("api_token")))
+    {
+        query.addQueryItem(QStringLiteral("api_key"), profile.accessToken);
+    }
+
+    playbackUrl.setQuery(query);
+    return playbackUrl.toString(QUrl::FullyEncoded);
+}
+
 QCoro::Task<QString> MediaService::reportPlaybackStart(QString itemId, QString mediaSourceId, long long positionTicks)
 {
     ensureValidProfile();
@@ -1744,38 +1789,29 @@ QCoro::Task<QString> MediaService::reportPlaybackStart(QString itemId, QString m
     ServerProfile profile = serverManager->activeProfile();
     QString playSessionId;
 
-    if (profile.type == ServerProfile::Jellyfin)
+    try
     {
-        
-        try
+        PlaybackInfo pbInfo = co_await getPlaybackInfo(itemId);
+        if (!serverManager)
         {
-            PlaybackInfo pbInfo = co_await getPlaybackInfo(itemId);
-            if (!serverManager)
-            {
-                qWarning() << "[API Warning] Playback Start aborted after "
-                              "PlaybackInfo: ServerManager was destroyed."
-                           << "ItemId:" << itemId;
-                co_return QString();
-            }
-            playSessionId = pbInfo.playSessionId;
-            qDebug() << "[API] Jellyfin PlaybackInfo retrieved. ServerSessionId:" << playSessionId;
+            qWarning() << "[API Warning] Playback Start aborted after "
+                          "PlaybackInfo: ServerManager was destroyed."
+                       << "ItemId:" << itemId;
+            co_return QString();
         }
-        catch (const std::exception &e)
-        {
-            qWarning() << "[API] Jellyfin getPlaybackInfo failed, will use local UUID:" << e.what();
-        }
-        if (playSessionId.isEmpty())
-        {
-            playSessionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
-            qWarning() << "[API] Jellyfin PlaybackInfo returned empty PlaySessionId, "
-                          "using local UUID as fallback:"
-                       << playSessionId;
-        }
+        playSessionId = pbInfo.playSessionId;
+        qDebug() << "[API] PlaybackInfo retrieved. ServerSessionId:" << playSessionId;
     }
-    else
+    catch (const std::exception &e)
     {
-        
+        qWarning() << "[API] getPlaybackInfo failed, will use local UUID:" << e.what();
+    }
+    if (playSessionId.isEmpty())
+    {
         playSessionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        qWarning() << "[API] PlaybackInfo returned empty PlaySessionId, "
+                      "using local UUID as fallback:"
+                   << playSessionId;
     }
 
     QJsonObject payload;

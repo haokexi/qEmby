@@ -16,6 +16,8 @@
 
 struct NetworkRequestOptions {
     bool ignoreSslErrors = false;
+    bool restrictRedirectsToSameHost = false;
+    qint64 maximumResponseBytes = 0;
 };
 
 class QEMBYCORE_EXPORT NetworkManager : public QObject

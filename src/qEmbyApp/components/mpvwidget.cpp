@@ -141,9 +141,11 @@ void MpvWidget::initializeGL() {
     mpv_render_context_set_update_callback(m_mpv_gl, onMpvRenderUpdate, this);
 
     if (!m_pendingUrl.isEmpty()) {
-        loadMediaNow(m_pendingUrl, m_pendingServerId, true);
+        loadMediaNow(m_pendingUrl, m_pendingServerId, true,
+                     m_pendingForceRelay);
         m_pendingUrl.clear();
         m_pendingServerId.clear();
+        m_pendingForceRelay = false;
     }
 }
 
@@ -175,7 +177,8 @@ void MpvWidget::resizeGL(int w, int h) {
 
 
 
-void MpvWidget::loadMediaNow(const QString &url, const QString &serverId, bool wasPending) {
+void MpvWidget::loadMediaNow(const QString &url, const QString &serverId,
+                             bool wasPending, bool forceRelay) {
     
     
     
@@ -188,7 +191,8 @@ void MpvWidget::loadMediaNow(const QString &url, const QString &serverId, bool w
     const bool isHttpStream =
         scheme == QStringLiteral("http") || scheme == QStringLiteral("https");
     const bool shouldRelay =
-        isHttpStream && proxy.type() != QNetworkProxy::NoProxy;
+        isHttpStream &&
+        (forceRelay || proxy.type() != QNetworkProxy::NoProxy);
 
     QString playbackUrl = url;
     bool usingRelay = false;
@@ -239,6 +243,7 @@ void MpvWidget::loadMediaNow(const QString &url, const QString &serverId, bool w
                                      : serverId)
             << "| mpvProxyValue:" << LogRedactionUtils::proxy(mpvProxyValue)
             << "| relay:" << usingRelay
+            << "| relayFallback:" << forceRelay
             << "| playbackUrl:" << (usingRelay
                                        ? playbackUrl
                                        : QStringLiteral("<direct>"))
@@ -269,14 +274,49 @@ void MpvWidget::loadMediaNow(const QString &url, const QString &serverId, bool w
     }
 }
 
-void MpvWidget::loadMedia(const QString &url, const QString &serverId) {
+void MpvWidget::loadMedia(const QString &url, const QString &serverId,
+                          bool forceRelay) {
+    m_currentUrl = url;
+    m_currentServerId = serverId;
+    m_relayRetryAttempted = false;
     
     if (!m_mpv_gl) {
         m_pendingUrl = url;
         m_pendingServerId = serverId;
+        m_pendingForceRelay = forceRelay;
         return;
     }
-    loadMediaNow(url, serverId, false);
+    loadMediaNow(url, serverId, false, forceRelay);
+}
+
+bool MpvWidget::retryWithRelay() {
+    if (!m_mpv_gl || m_usingStreamRelay || m_relayRetryAttempted ||
+        !m_streamRelay) {
+        return false;
+    }
+
+    const QUrl targetUrl(m_currentUrl);
+    const QString scheme = targetUrl.scheme().toLower();
+    if (!targetUrl.isValid() ||
+        (scheme != QStringLiteral("http") &&
+         scheme != QStringLiteral("https"))) {
+        return false;
+    }
+
+    m_relayRetryAttempted = true;
+    qWarning() << "[MpvWidget] Direct stream open failed, retrying through "
+                  "local relay"
+               << "| url:" << LogRedactionUtils::url(targetUrl)
+               << "| serverId:"
+               << (m_currentServerId.isEmpty() ? QStringLiteral("<none>")
+                                                : m_currentServerId);
+    loadMediaNow(m_currentUrl, m_currentServerId, false, true);
+    if (!m_usingStreamRelay) {
+        return false;
+    }
+
+    play();
+    return true;
 }
 
 void MpvWidget::play() {
@@ -289,6 +329,13 @@ void MpvWidget::pause() {
 
 void MpvWidget::stop() {
     m_controller->command(QVariantList{"stop"});
+    if (m_streamRelay) {
+        m_streamRelay->stop();
+    }
+    if (m_usingStreamRelay) {
+        m_usingStreamRelay = false;
+        Q_EMIT relayActiveChanged(false);
+    }
 }
 
 void MpvWidget::seek(double positionInSeconds) {

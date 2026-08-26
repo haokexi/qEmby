@@ -2,6 +2,10 @@
 
 #include <utility>
 
+namespace {
+constexpr qint64 kMaximumApiResponseBytes = 32 * 1024 * 1024;
+}
+
 ApiClient::ApiClient(const ServerProfile& profile, NetworkManager* nm, QObject* parent)
     : QObject(parent), m_profile(profile), m_network(nm) {}
 
@@ -26,6 +30,8 @@ QMap<QString, QString> ApiClient::getAuthHeaders() const {
 NetworkRequestOptions ApiClient::requestOptions() const {
     NetworkRequestOptions options;
     options.ignoreSslErrors = m_profile.ignoreSslVerification;
+    options.restrictRedirectsToSameHost = true;
+    options.maximumResponseBytes = kMaximumApiResponseBytes;
     return options;
 }
 

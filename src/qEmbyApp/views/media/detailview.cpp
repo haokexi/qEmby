@@ -115,6 +115,18 @@ void applyReservedSectionItems(QWidget *reserve, MediaSectionWidget *section,
   section->setItems(items);
 }
 
+bool hasStrmMediaSource(const MediaItem &item) {
+  if (item.container.compare(QStringLiteral("strm"), Qt::CaseInsensitive) == 0)
+    return true;
+
+  for (const MediaSourceInfo &source : item.mediaSources) {
+    if (source.container.compare(QStringLiteral("strm"),
+                                 Qt::CaseInsensitive) == 0)
+      return true;
+  }
+  return false;
+}
+
 
 
 
@@ -2011,34 +2023,46 @@ DetailView::executeFetchSecondaries(QPointer<DetailView> safeThis,
     co_return;
 
   
-  try {
-    qDebug() << "[DetailView][network] Fetch additional parts"
-             << "itemId=" << targetId;
-    QList<MediaItem> additionalParts =
-        co_await core->mediaService()->getAdditionalParts(targetId);
-    if (!safeThis || safeThis->m_currentItemId != targetId)
-      co_return;
-
-    bool additionalPartsUnchanged = false;
-    if (safeThis->m_appliedCachedAdditionalPartsToUi) {
-      additionalPartsUnchanged = co_await mediaItemListsEqualAsync(
-          safeThis->m_cachedAdditionalParts, additionalParts);
-      if (!safeThis || safeThis->m_currentItemId != targetId)
-        co_return;
-    }
-    safeThis->m_cachedAdditionalParts = additionalParts;
+  if (hasStrmMediaSource(safeThis->m_currentMediaItem)) {
+    qInfo() << "[DetailView][network] Skip additional parts for STRM source"
+            << "itemId=" << targetId;
+    safeThis->m_cachedAdditionalParts.clear();
     safeThis->m_hasCachedAdditionalParts = true;
-    if (!additionalPartsUnchanged) {
-      applyReservedSectionItems(safeThis->m_additionalPartsSectionReserveWidget,
-                                safeThis->m_additionalPartsWidget,
-                                additionalParts);
-    }
-  } catch (...) {
-    if (safeThis && safeThis->m_currentItemId == targetId &&
-        !safeThis->m_appliedCachedAdditionalPartsToUi) {
+    if (!safeThis->m_appliedCachedAdditionalPartsToUi) {
       applyReservedSectionItems(
           safeThis->m_additionalPartsSectionReserveWidget,
           safeThis->m_additionalPartsWidget, {});
+    }
+  } else {
+    try {
+      qDebug() << "[DetailView][network] Fetch additional parts"
+               << "itemId=" << targetId;
+      QList<MediaItem> additionalParts =
+          co_await core->mediaService()->getAdditionalParts(targetId);
+      if (!safeThis || safeThis->m_currentItemId != targetId)
+        co_return;
+
+      bool additionalPartsUnchanged = false;
+      if (safeThis->m_appliedCachedAdditionalPartsToUi) {
+        additionalPartsUnchanged = co_await mediaItemListsEqualAsync(
+            safeThis->m_cachedAdditionalParts, additionalParts);
+        if (!safeThis || safeThis->m_currentItemId != targetId)
+          co_return;
+      }
+      safeThis->m_cachedAdditionalParts = additionalParts;
+      safeThis->m_hasCachedAdditionalParts = true;
+      if (!additionalPartsUnchanged) {
+        applyReservedSectionItems(safeThis->m_additionalPartsSectionReserveWidget,
+                                  safeThis->m_additionalPartsWidget,
+                                  additionalParts);
+      }
+    } catch (...) {
+      if (safeThis && safeThis->m_currentItemId == targetId &&
+          !safeThis->m_appliedCachedAdditionalPartsToUi) {
+        applyReservedSectionItems(
+            safeThis->m_additionalPartsSectionReserveWidget,
+            safeThis->m_additionalPartsWidget, {});
+      }
     }
   }
 

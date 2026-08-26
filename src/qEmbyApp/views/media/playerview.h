@@ -106,6 +106,8 @@ private slots:
 
 private:
     void setupUi();
+    bool retryPrematurePlaybackEndWithRelay();
+    bool reportPlaybackStoppedOnce();
     void updateTitleElision();
     void updateOverlayLayout();
     void clearMediaSwitcherCache();
@@ -298,6 +300,7 @@ private:
     bool m_hasReportedStop = false; 
     bool m_isPlaybackFinished = false;
     bool m_autoPlayAdvanceInProgress = false;
+    quint64 m_playbackGeneration = 0;
     bool m_isViewTearingDown = false;
     bool m_powerInhibitionHeld = false;
     bool m_isRightSidebarVisible = false; 

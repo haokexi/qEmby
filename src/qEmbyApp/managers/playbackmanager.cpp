@@ -120,9 +120,16 @@ void PlaybackManager::startInternalPlayback(const QString& mediaId, const QStrin
 
 void PlaybackManager::stopExternalPlayer()
 {
-    if (m_extProcess && m_extProcess->state() != QProcess::NotRunning) {
-        m_extProcess->kill();
-        m_extProcess->waitForFinished(3000);
+    if (m_extProcess) {
+        QPointer<QProcess> process = m_extProcess;
+        m_extProcess = nullptr;
+        if (process->state() != QProcess::NotRunning) {
+            process->kill();
+            process->waitForFinished(3000);
+        }
+        if (process) {
+            process->deleteLater();
+        }
     }
     cleanupExternalPlayerState();
 }
@@ -595,13 +602,6 @@ void PlaybackManager::launchExternalPlayer(const QString& mediaId, const QString
     process->setArguments(args);
 
     
-    
-    QCoro::connect(m_core->mediaService()->reportPlaybackStart(mediaId, mediaSourceId, startPositionTicks),
-                   this, [this](const QString &sessionId) {
-        m_currentPlaySessionId = sessionId;
-    });
-
-    
     m_progressTimer = new QTimer(this);
     connect(m_progressTimer, &QTimer::timeout, this, [this]() {
         if (!m_core || !m_ipc || m_currentMediaId.isEmpty() || m_currentPlaySessionId.isEmpty()) return;
@@ -656,18 +656,39 @@ void PlaybackManager::launchExternalPlayer(const QString& mediaId, const QString
     });
 
     m_extProcess = process;
-    process->start();
-    m_progressTimer->start(PROGRESS_REPORT_INTERVAL_MS);
+    QPointer<QProcess> guardedProcess(process);
+    QCoro::connect(
+        m_core->mediaService()->reportPlaybackStart(mediaId, mediaSourceId,
+                                                    startPositionTicks),
+        process,
+        [this, guardedProcess, playerPath, playerType, args](const QString &sessionId) {
+            if (!guardedProcess || m_extProcess != guardedProcess.data()) {
+                return;
+            }
 
-    
-    QString playerName = QFileInfo(playerPath).baseName();
-    ModernToast::showMessage(tr("Launching %1...").arg(playerName), 1500);
+            m_currentPlaySessionId = sessionId;
+            QStringList sessionArgs = args;
+            if (!sessionArgs.isEmpty()) {
+                sessionArgs.last() = m_core->mediaService()->getSessionStreamUrl(
+                    sessionArgs.constLast(), sessionId);
+                guardedProcess->setArguments(sessionArgs);
+            }
+            guardedProcess->start();
+            if (m_progressTimer) {
+                m_progressTimer->start(PROGRESS_REPORT_INTERVAL_MS);
+            }
 
-    qDebug() << "[PlaybackManager] Launching external player:"
-             << playerPath
-             << "Type:" << static_cast<int>(playerType)
-             << "Args:" << LogRedactionUtils::stringList(args)
-             << "IPC:" << (m_ipc ? (m_ipc->isPrecise() ? "precise" : "estimation") : "none");
+            const QString playerName = QFileInfo(playerPath).baseName();
+            ModernToast::showMessage(tr("Launching %1...").arg(playerName), 1500);
+
+            qDebug() << "[PlaybackManager] Launching external player:"
+                     << playerPath
+                     << "Type:" << static_cast<int>(playerType)
+                     << "Args:" << LogRedactionUtils::stringList(sessionArgs)
+                     << "IPC:"
+                     << (m_ipc ? (m_ipc->isPrecise() ? "precise" : "estimation")
+                               : "none");
+        });
 }
 
 

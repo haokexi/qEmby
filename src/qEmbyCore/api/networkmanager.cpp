@@ -105,7 +105,9 @@ void NetworkManager::applyHeaders(QNetworkRequest& request, const QMap<QString, 
 void NetworkManager::applyRequestOptions(QNetworkRequest& request,
                                          const NetworkRequestOptions& options) {
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                         QNetworkRequest::NoLessSafeRedirectPolicy);
+                         options.restrictRedirectsToSameHost
+                             ? QNetworkRequest::UserVerifiedRedirectPolicy
+                             : QNetworkRequest::NoLessSafeRedirectPolicy);
 
     if (options.ignoreSslErrors &&
         request.url().scheme().compare(QStringLiteral("https"),
@@ -119,6 +121,70 @@ void NetworkManager::attachReplyHandlers(QNetworkReply* reply,
                                          const NetworkRequestOptions& options,
                                          const QString& requestKind) {
     reply->setProperty("ignoreSslErrors", options.ignoreSslErrors);
+
+    if (options.restrictRedirectsToSameHost) {
+        const QUrl originalUrl = reply->request().url();
+        connect(reply, &QNetworkReply::redirected, reply,
+                [reply, originalUrl, requestKind](const QUrl& redirectUrl) {
+                    const QUrl resolvedUrl = reply->url().resolved(redirectUrl);
+                    const QString originalScheme = originalUrl.scheme().toLower();
+                    const QString redirectScheme = resolvedUrl.scheme().toLower();
+                    const bool sameHost =
+                        !originalUrl.host().isEmpty() &&
+                        resolvedUrl.host().compare(originalUrl.host(),
+                                                   Qt::CaseInsensitive) == 0;
+                    const bool safeScheme =
+                        redirectScheme == originalScheme ||
+                        (originalScheme == QStringLiteral("http") &&
+                         redirectScheme == QStringLiteral("https"));
+
+                    if (sameHost && safeScheme) {
+                        reply->redirectAllowed();
+                        return;
+                    }
+
+                    reply->setProperty("blockedRedirect", true);
+                    reply->setProperty("blockedRedirectHost", resolvedUrl.host());
+                    qWarning() << "[NetworkManager]" << requestKind
+                               << "blocked cross-host API redirect"
+                               << "| originalHost:" << originalUrl.host()
+                               << "| redirectHost:" << resolvedUrl.host();
+                    reply->abort();
+                });
+    }
+
+    if (options.maximumResponseBytes > 0) {
+        const auto abortOversizedReply =
+            [reply, maximumBytes = options.maximumResponseBytes, requestKind]() {
+                if (reply->property("responseTooLarge").toBool()) {
+                    return;
+                }
+
+                bool contentLengthOk = false;
+                const qint64 contentLength =
+                    reply->header(QNetworkRequest::ContentLengthHeader)
+                        .toLongLong(&contentLengthOk);
+                const qint64 bufferedBytes = reply->bytesAvailable();
+                if ((!contentLengthOk || contentLength <= maximumBytes) &&
+                    bufferedBytes <= maximumBytes) {
+                    return;
+                }
+
+                reply->setProperty("responseTooLarge", true);
+                reply->setProperty("maximumResponseBytes", maximumBytes);
+                qWarning() << "[NetworkManager]" << requestKind
+                           << "aborted oversized API response"
+                           << "| host:" << reply->url().host()
+                           << "| contentLength:"
+                           << (contentLengthOk ? contentLength : -1)
+                           << "| bufferedBytes:" << bufferedBytes
+                           << "| maximumBytes:" << maximumBytes;
+                reply->abort();
+            };
+        connect(reply, &QNetworkReply::metaDataChanged, reply,
+                abortOversizedReply);
+        connect(reply, &QIODevice::readyRead, reply, abortOversizedReply);
+    }
 
     connect(reply, &QNetworkReply::sslErrors, reply,
             [reply, options, requestKind](const QList<QSslError>& errors) {
@@ -153,6 +219,20 @@ void NetworkManager::attachReplyHandlers(QNetworkReply* reply,
 
 QString NetworkManager::buildReplyErrorMessage(QNetworkReply* reply,
                                                int httpStatus) {
+    if (reply->property("blockedRedirect").toBool()) {
+        return QString(NetworkManager::tr(
+                           "API 请求被拒绝：服务器将元数据请求重定向到了外部主机 %1。"))
+            .arg(reply->property("blockedRedirectHost").toString());
+    }
+
+    if (reply->property("responseTooLarge").toBool()) {
+        const qint64 maximumBytes =
+            reply->property("maximumResponseBytes").toLongLong();
+        return QString(NetworkManager::tr(
+                           "API 响应异常过大，已在 %1 MiB 处中止。"))
+            .arg(maximumBytes / (1024 * 1024));
+    }
+
     QString errorMsg =
         QString(NetworkManager::tr("请求失败(HTTP %1): %2"))
             .arg(httpStatus)

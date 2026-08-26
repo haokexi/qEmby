@@ -170,6 +170,8 @@ public:
 
     QString getStreamUrl(const QString& itemId, const QString& mediaSourceId) const;
     QString getStreamUrl(const QString& itemId, const MediaSourceInfo& sourceInfo) const;
+    QString getSessionStreamUrl(const QString& streamUrl,
+                                const QString& playSessionId) const;
 
     QCoro::Task<QString> reportPlaybackStart(QString itemId, QString mediaSourceId, long long positionTicks);
     QCoro::Task<void> reportPlaybackProgress(QString itemId, QString mediaSourceId, long long positionTicks, bool isPaused, QString playSessionId);

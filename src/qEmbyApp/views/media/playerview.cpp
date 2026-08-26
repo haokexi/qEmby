@@ -886,6 +886,7 @@ QCoro::Task<void> PlayerView::autoPlayNextMediaIfEnabled()
 
     QPointer<PlayerView> guard(this);
     const QString finishedMediaId = m_currentMediaId;
+    const quint64 finishedGeneration = m_playbackGeneration;
     const bool finishedSeriesMode = m_isSeriesMode && !m_seriesId.isEmpty();
 
     qInfo().noquote() << "[PlayerView] Continuous playback resolving next item"
@@ -896,8 +897,14 @@ QCoro::Task<void> PlayerView::autoPlayNextMediaIfEnabled()
     if (!m_switcherCacheReady || m_switcherCacheMediaId != finishedMediaId)
     {
         co_await ensureMediaSwitcherDataLoaded();
-        if (!guard || guard->m_currentMediaId != finishedMediaId)
+        if (!guard)
         {
+            co_return;
+        }
+        if (guard->m_currentMediaId != finishedMediaId ||
+            guard->m_playbackGeneration != finishedGeneration)
+        {
+            guard->m_autoPlayAdvanceInProgress = false;
             co_return;
         }
     }
@@ -1591,6 +1598,11 @@ void PlayerView::setupUi()
             {
                 qDebug() << "[PlayerView] MPV end of file"
                          << "| reason=" << reason;
+                if (reason == QLatin1String("error") &&
+                    retryPrematurePlaybackEndWithRelay())
+                {
+                    return;
+                }
                 m_isPlaybackFinished = (reason == QLatin1String("eof"));
                 m_isPlaying = false;
                 m_isBuffering = false;
@@ -1600,6 +1612,14 @@ void PlayerView::setupUi()
                 if (m_playPauseBtn)
                 {
                     m_playPauseBtn->setIcon(QIcon(":/svg/player/play.svg"));
+                }
+                if (reason == QLatin1String("error"))
+                {
+                    reportPlaybackStoppedOnce();
+                    if (m_mpvWidget)
+                    {
+                        m_mpvWidget->stop();
+                    }
                 }
                 if (m_isPlaybackFinished)
                 {
@@ -1611,6 +1631,49 @@ void PlayerView::setupUi()
     updateDanmakuButtonState();
     updateMediaSwitcherButton();
     m_rightSidebar->raise();
+}
+
+bool PlayerView::retryPrematurePlaybackEndWithRelay()
+{
+    if (!m_mpvWidget || m_isViewTearingDown || m_hasReportedStop)
+    {
+        return false;
+    }
+
+    if (m_totalDuration > 0.0)
+    {
+        const double eofTolerance =
+            qBound(2.0, m_totalDuration * 0.01, 30.0);
+        if (m_currentPosition + eofTolerance >= m_totalDuration)
+        {
+            return false;
+        }
+    }
+
+    if (!m_mpvWidget->retryWithRelay())
+    {
+        return false;
+    }
+
+    qInfo() << "[PlayerView] Retrying premature direct-stream end through "
+               "local relay"
+            << "| position=" << m_currentPosition
+            << "| duration=" << m_totalDuration;
+    if (m_currentPosition > 0.0)
+    {
+        m_pendingSeekSeconds = m_currentPosition;
+    }
+    m_isPlaybackFinished = false;
+    m_isPlaying = true;
+    m_isBuffering = true;
+    m_isSeeking = false;
+    updatePowerInhibition();
+    updateLoadingState();
+    if (m_playPauseBtn)
+    {
+        m_playPauseBtn->setIcon(QIcon(":/svg/player/pause.svg"));
+    }
+    return true;
 }
 
 
@@ -2113,6 +2176,7 @@ QCoro::Task<void> PlayerView::switchFromMediaSwitcher(QString mediaId, QString t
         co_return;
     }
 
+    const quint64 switchGeneration = ++m_playbackGeneration;
     m_switcherPendingItemId = mediaId;
     m_switcherPendingTitle = title;
     m_switcherPendingTicks = startPositionTicks;
@@ -2121,7 +2185,7 @@ QCoro::Task<void> PlayerView::switchFromMediaSwitcher(QString mediaId, QString t
     {
         MediaItem detail = co_await m_core->mediaService()->getItemDetail(mediaId);
 
-        if (!guard)
+        if (!guard || guard->m_playbackGeneration != switchGeneration)
         {
             co_return;
         }
@@ -2134,7 +2198,7 @@ QCoro::Task<void> PlayerView::switchFromMediaSwitcher(QString mediaId, QString t
         {
             PlaybackInfo playbackInfo = co_await m_core->mediaService()->getPlaybackInfo(detail.id);
 
-            if (!guard)
+            if (!guard || guard->m_playbackGeneration != switchGeneration)
             {
                 co_return;
             }
@@ -2188,6 +2252,7 @@ QCoro::Task<void> PlayerView::switchFromMediaSwitcher(QString mediaId, QString t
         }
 
         stopAndReport();
+        const quint64 loadGeneration = m_playbackGeneration;
         m_toastLabel->hide();
 
         PlayerLaunchContext launchContext;
@@ -2197,7 +2262,16 @@ QCoro::Task<void> PlayerView::switchFromMediaSwitcher(QString mediaId, QString t
 
         QTimer::singleShot(250, this,
                            [this, id = detail.id, resolvedTitle, streamUrl, startTicks = m_switcherPendingTicks,
-                            sourceInfoVar]() { playMedia(id, resolvedTitle, streamUrl, startTicks, sourceInfoVar); });
+                            sourceInfoVar, loadGeneration]()
+                           {
+                               if (m_playbackGeneration != loadGeneration ||
+                                   m_isViewTearingDown)
+                               {
+                                   return;
+                               }
+                               playMedia(id, resolvedTitle, streamUrl,
+                                         startTicks, sourceInfoVar);
+                           });
 
         m_switcherPendingItemId.clear();
         m_switcherPendingTitle.clear();
@@ -2205,7 +2279,7 @@ QCoro::Task<void> PlayerView::switchFromMediaSwitcher(QString mediaId, QString t
     }
     catch (const std::exception &e)
     {
-        if (!guard)
+        if (!guard || guard->m_playbackGeneration != switchGeneration)
         {
             co_return;
         }
@@ -2373,47 +2447,19 @@ void PlayerView::hideRightSidebar(bool immediate)
     m_rightSidebarAnim->setEndValue(hiddenPos);
     m_rightSidebarAnim->start();
 }
-
-
-
-void PlayerView::stopAndReport()
+bool PlayerView::reportPlaybackStoppedOnce()
 {
-    
     if (m_hasReportedStop)
     {
-        return;
+        return false;
     }
+
     m_hasReportedStop = true;
     updatePowerInhibition();
-    m_longPressHandler->setTeardown(true);
-    stopTransientUiAnimations(m_isViewTearingDown);
-
-    
     if (m_reportTimer)
-        m_reportTimer->stop();
-    if (m_mousePollTimer)
-        m_mousePollTimer->stop();
-    m_longPressHandler->stopKeyLongPress(false);
-    m_longPressHandler->stopMouseEdgeLongPress();
-    if (m_bufferTimer)
-        m_bufferTimer->stop();
-    if (m_hideTimer)
-        m_hideTimer->stop();
-    if (m_osdLayer)
-        m_osdLayer->forceHide();
-    if (m_toastTimer)
-        m_toastTimer->stop();
-    if (m_singleClickTimer)
-        m_singleClickTimer->stop();
-
-    hideRightSidebar(true);
-    hideHudMediaSwitcher();
-    if (m_activePopup)
     {
-        m_activePopup->deleteLater();
-        m_activePopup = nullptr;
+        m_reportTimer->stop();
     }
-    closeActivePlayerDialog();
 
     if (!m_currentMediaId.isEmpty() && m_core && m_core->mediaService())
     {
@@ -2458,6 +2504,46 @@ void PlayerView::stopAndReport()
         QTimer::singleShot(10000, m_core, [lingeringTask]() { delete lingeringTask; });
     }
 
+    return true;
+}
+
+
+
+void PlayerView::stopAndReport()
+{
+    ++m_playbackGeneration;
+    if (!reportPlaybackStoppedOnce())
+    {
+        return;
+    }
+
+    m_longPressHandler->setTeardown(true);
+    stopTransientUiAnimations(m_isViewTearingDown);
+
+    if (m_mousePollTimer)
+        m_mousePollTimer->stop();
+    m_longPressHandler->stopKeyLongPress(false);
+    m_longPressHandler->stopMouseEdgeLongPress();
+    if (m_bufferTimer)
+        m_bufferTimer->stop();
+    if (m_hideTimer)
+        m_hideTimer->stop();
+    if (m_osdLayer)
+        m_osdLayer->forceHide();
+    if (m_toastTimer)
+        m_toastTimer->stop();
+    if (m_singleClickTimer)
+        m_singleClickTimer->stop();
+
+    hideRightSidebar(true);
+    hideHudMediaSwitcher();
+    if (m_activePopup)
+    {
+        m_activePopup->deleteLater();
+        m_activePopup = nullptr;
+    }
+    closeActivePlayerDialog();
+
     if (m_mpvWidget)
     {
         if (m_danmakuController)
@@ -2466,7 +2552,7 @@ void PlayerView::stopAndReport()
         }
         
         disconnect(m_mpvWidget, &MpvWidget::positionChanged, this, &PlayerView::onPositionChanged);
-        m_mpvWidget->controller()->command(QVariantList{"stop"});
+        m_mpvWidget->stop();
     }
 }
 
@@ -3330,22 +3416,12 @@ void PlayerView::onMpvPropertyChanged(const QString &property, const QVariant &v
     }
     else if (property == "eof-reached")
     {
-        m_isPlaybackFinished = value.toBool();
-        if (m_isPlaybackFinished)
+        if (value.toBool())
         {
-            qDebug() << "[PlayerView] MPV reached EOF"
+            qDebug() << "[PlayerView] MPV eof-reached property changed; "
+                        "waiting for end-file reason"
                      << "| position=" << m_currentPosition
                      << "| duration=" << m_totalDuration;
-            m_isPlaying = false;
-            m_isBuffering = false;
-            m_isSeeking = false;
-            updatePowerInhibition();
-            updateLoadingState();
-            if (m_playPauseBtn)
-            {
-                m_playPauseBtn->setIcon(QIcon(":/svg/player/play.svg"));
-            }
-            autoPlayNextMediaIfEnabled();
         }
     }
 
@@ -3510,10 +3586,22 @@ void PlayerView::showSettingsMenu()
 
                     
                     stopAndReport();
+                    const quint64 reloadGeneration = m_playbackGeneration;
 
                     
-                    QTimer::singleShot(150, this, [this, mediaId, title, origUrl, currentTicks, sourceInfo]()
-                                       { playMedia(mediaId, title, origUrl, currentTicks, sourceInfo); });
+                    QTimer::singleShot(
+                        150, this,
+                        [this, mediaId, title, origUrl, currentTicks,
+                         sourceInfo, reloadGeneration]()
+                        {
+                            if (m_playbackGeneration != reloadGeneration ||
+                                m_isViewTearingDown)
+                            {
+                                return;
+                            }
+                            playMedia(mediaId, title, origUrl, currentTicks,
+                                      sourceInfo);
+                        });
                 }
                 else if (action == "subtitle_settings")
                 {
@@ -4629,6 +4717,7 @@ QCoro::Task<void> PlayerView::executeFetchLogo(QPointer<PlayerView> safeThis, QE
 void PlayerView::playMedia(const QString &mediaId, const QString &title, const QString &streamUrl,
                            long long startPositionTicks, const QVariant &sourceInfoVar)
 {
+    const quint64 playbackGeneration = ++m_playbackGeneration;
     PlayerLaunchContext launchContext;
     MediaSourceInfo resolvedSourceInfo;
     MediaItem resolvedItem;
@@ -4839,7 +4928,6 @@ void PlayerView::playMedia(const QString &mediaId, const QString &title, const Q
     
     
     const QString activeServerId = m_core->serverManager()->activeProfile().id;
-    m_mpvWidget->loadMedia(actualStreamUrl, activeServerId);
 
     if (!resolvedItem.id.isEmpty() || !resolvedSourceInfo.id.isEmpty())
     {
@@ -5009,8 +5097,6 @@ void PlayerView::playMedia(const QString &mediaId, const QString &title, const Q
     
     setProperty("pendingSubtitles", pendingSubtitles);
 
-    m_mpvWidget->play();
-
     m_isPlaying = true;
     updatePowerInhibition();
     m_playPauseBtn->setIcon(QIcon(":/svg/player/pause.svg"));
@@ -5058,17 +5144,48 @@ void PlayerView::playMedia(const QString &mediaId, const QString &title, const Q
     }
 
     
-    auto startSessionTask = [](QPointer<PlayerView> safeThis, MediaService *s, QString mId, QString sId,
-                               long long ticks) -> QCoro::Task<void>
+    auto startSessionAndLoadTask = [](QPointer<PlayerView> safeThis, MediaService *s,
+                                      QString mId, QString sId, long long ticks,
+                                      QString playbackUrl,
+                                      QString serverId,
+                                      bool forceRelay,
+                                      quint64 generation) -> QCoro::Task<void>
     {
-        QString sessionId = co_await s->reportPlaybackStart(mId, sId, ticks);
-        if (safeThis && safeThis->m_currentMediaId == mId)
+        QString sessionId;
+        try
         {
-            safeThis->m_currentPlaySessionId = sessionId;
+            sessionId = co_await s->reportPlaybackStart(mId, sId, ticks);
         }
+        catch (const std::exception &e)
+        {
+            qWarning() << "[PlayerView] Playback session preparation failed, "
+                          "loading stream with existing credentials:"
+                       << e.what();
+        }
+
+        if (!safeThis || safeThis->m_playbackGeneration != generation ||
+            safeThis->m_currentMediaId != mId ||
+            safeThis->m_currentMediaSourceId != sId ||
+            safeThis->m_hasReportedStop || safeThis->m_isViewTearingDown ||
+            safeThis->m_core->serverManager()->activeProfile().id != serverId)
+        {
+            co_return;
+        }
+
+        safeThis->m_currentPlaySessionId = sessionId;
+        const QString sessionStreamUrl =
+            s->getSessionStreamUrl(playbackUrl, sessionId);
+        safeThis->m_mpvWidget->loadMedia(sessionStreamUrl, serverId,
+                                         forceRelay);
+        safeThis->m_mpvWidget->play();
     };
-    startSessionTask(QPointer<PlayerView>(this), m_core->mediaService(), m_currentMediaId, m_currentMediaSourceId,
-                     startPositionTicks);
+    const bool forceRelay =
+        resolvedSourceInfo.container.compare(QStringLiteral("strm"),
+                                             Qt::CaseInsensitive) == 0;
+    startSessionAndLoadTask(QPointer<PlayerView>(this), m_core->mediaService(),
+                            m_currentMediaId, m_currentMediaSourceId,
+                            startPositionTicks, actualStreamUrl, activeServerId,
+                            forceRelay, playbackGeneration);
 
     m_reportTimer->start();
     m_mousePollTimer->start();
