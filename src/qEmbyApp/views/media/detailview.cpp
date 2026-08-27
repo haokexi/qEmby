@@ -2468,20 +2468,14 @@ void DetailView::updateTagLayoutHeight() {
   }
 
   if (targetWidth <= 0) {
-    m_tagsWidget->updateGeometry();
-    QTimer::singleShot(50, this, [this]() { updateTagLayoutHeight(); });
     return;
   }
 
-  m_tagsLayout->invalidate();
   const int targetHeight = m_tagsLayout->heightForWidth(targetWidth);
   if (m_tagsWidget->minimumHeight() != targetHeight) {
     m_tagsWidget->setMinimumHeight(targetHeight);
-  }
-  m_tagsWidget->updateGeometry();
-
-  if (m_textContainer) {
-    m_textContainer->updateGeometry();
+    if (m_textContainer)
+      m_textContainer->updateGeometry();
   }
 }
 

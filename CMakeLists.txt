@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.19)
 
 project(qEmby VERSION 0.0.5 LANGUAGES CXX)
 
+option(QEMBY_BUILD_TESTS "Build qEmby regression tests" OFF)
+
 if(APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET 13.0)
 endif()
@@ -109,5 +111,10 @@ add_subdirectory(libs/qwindowkit)
 add_subdirectory(libs/qwindowkit/examples/shared)
 add_subdirectory(src/qEmbyCore)
 add_subdirectory(src/qEmbyApp)
+
+if(QEMBY_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 include(QEmbyPackaging)

@@ -9,6 +9,8 @@
 #include <QLabel>
 #include <QMargins>
 #include <QPushButton>
+#include <QResizeEvent>
+#include <QScopedValueRollback>
 #include <QShowEvent>
 #include <QTimer>
 #include <QUrl>
@@ -126,7 +128,8 @@ void DetailBottomInfoWidget::clear() {
 
 void DetailBottomInfoWidget::resizeEvent(QResizeEvent *event) {
   QWidget::resizeEvent(event);
-  scheduleFlowLayoutHeightUpdate();
+  if (event->size().width() != event->oldSize().width())
+    scheduleFlowLayoutHeightUpdate();
 }
 
 void DetailBottomInfoWidget::showEvent(QShowEvent *event) {
@@ -144,10 +147,15 @@ bool DetailBottomInfoWidget::eventFilter(QObject *watched, QEvent *event) {
   if (watchesFlowGeometry) {
     switch (event->type()) {
     case QEvent::LayoutRequest:
-    case QEvent::Resize:
     case QEvent::Show:
       scheduleFlowLayoutHeightUpdate();
       break;
+    case QEvent::Resize: {
+      auto *resizeEvent = static_cast<QResizeEvent *>(event);
+      if (resizeEvent->size().width() != resizeEvent->oldSize().width())
+        scheduleFlowLayoutHeightUpdate();
+      break;
+    }
     default:
       break;
     }
@@ -157,7 +165,7 @@ bool DetailBottomInfoWidget::eventFilter(QObject *watched, QEvent *event) {
 }
 
 void DetailBottomInfoWidget::scheduleFlowLayoutHeightUpdate() {
-  if (m_flowLayoutHeightUpdatePending)
+  if (m_flowLayoutHeightUpdatePending || m_flowLayoutHeightUpdateInProgress)
     return;
 
   m_flowLayoutHeightUpdatePending = true;
@@ -217,45 +225,52 @@ int DetailBottomInfoWidget::resolveFlowLayoutWidth(QWidget *widget) const {
   return clampWidth(targetWidth);
 }
 
-void DetailBottomInfoWidget::updateFlowLayoutHeight(QWidget *widget,
+bool DetailBottomInfoWidget::updateFlowLayoutHeight(QWidget *widget,
                                                     FlowLayout *layout) {
   if (!widget || !layout)
-    return;
+    return false;
 
   int targetHeight = 0;
   if (layout->count() > 0) {
     const int targetWidth = resolveFlowLayoutWidth(widget);
 
-    if (targetWidth > 0) {
-      layout->invalidate();
+    if (targetWidth > 0)
       targetHeight = layout->heightForWidth(targetWidth);
-    }
   }
 
-  if (widget->minimumHeight() != targetHeight) {
-    widget->setMinimumHeight(targetHeight);
+  bool geometryChanged = false;
+  if (widget->minimumHeight() != targetHeight ||
+      widget->maximumHeight() != targetHeight) {
+    widget->setFixedHeight(targetHeight);
+    geometryChanged = true;
   }
-  if (widget->maximumHeight() != targetHeight) {
-    widget->setMaximumHeight(targetHeight);
-  }
-  widget->updateGeometry();
 
   if (QWidget *wrapper = widget->parentWidget()) {
-    if (wrapper->minimumHeight() != targetHeight) {
-      wrapper->setMinimumHeight(targetHeight);
+    if (wrapper->minimumHeight() != targetHeight ||
+        wrapper->maximumHeight() != targetHeight) {
+      wrapper->setFixedHeight(targetHeight);
+      geometryChanged = true;
     }
-    if (wrapper->maximumHeight() != targetHeight) {
-      wrapper->setMaximumHeight(targetHeight);
-    }
-    wrapper->updateGeometry();
   }
+
+  return geometryChanged;
 }
 
-void DetailBottomInfoWidget::updateFlowLayoutHeights() {
-  updateFlowLayoutHeight(m_tagsBottomWidget, m_tagsBottomLayout);
-  updateFlowLayoutHeight(m_studiosWidget, m_studiosLayout);
-  updateFlowLayoutHeight(m_externalLinksWidget, m_externalLinksLayout);
-  updateGeometry();
+bool DetailBottomInfoWidget::updateFlowLayoutHeights() {
+  if (m_flowLayoutHeightUpdateInProgress)
+    return false;
+
+  QScopedValueRollback<bool> updateGuard(m_flowLayoutHeightUpdateInProgress,
+                                         true);
+  bool geometryChanged = false;
+  geometryChanged |=
+      updateFlowLayoutHeight(m_tagsBottomWidget, m_tagsBottomLayout);
+  geometryChanged |= updateFlowLayoutHeight(m_studiosWidget, m_studiosLayout);
+  geometryChanged |=
+      updateFlowLayoutHeight(m_externalLinksWidget, m_externalLinksLayout);
+  if (geometryChanged)
+    updateGeometry();
+  return geometryChanged;
 }
 
 void DetailBottomInfoWidget::clearLayout(QLayout *layout) {

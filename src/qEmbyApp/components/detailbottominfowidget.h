@@ -35,8 +35,8 @@ private:
     void addInfoRow(QGridLayout* layout, int& row, const QString& key, const QString& value);
     QWidget* wrapMaxWidth(QWidget* child, int maxW);
     int resolveFlowLayoutWidth(QWidget* widget) const;
-    void updateFlowLayoutHeight(QWidget* widget, FlowLayout* layout);
-    void updateFlowLayoutHeights();
+    bool updateFlowLayoutHeight(QWidget* widget, FlowLayout* layout);
+    bool updateFlowLayoutHeights();
     void scheduleFlowLayoutHeightUpdate();
 
     QLabel* m_tagsBottomTitle;
@@ -62,6 +62,7 @@ private:
     HorizontalWidgetGallery* m_mediaInfoGallery;
 
     bool m_flowLayoutHeightUpdatePending = false;
+    bool m_flowLayoutHeightUpdateInProgress = false;
 };
 
 #endif 

@@ -79,12 +79,6 @@ int FlowLayout::heightForWidth(int width) const
     return height;
 }
 
-void FlowLayout::invalidate()
-{
-    QLayout::invalidate();
-    updateParentGeometry();
-}
-
 void FlowLayout::setGeometry(const QRect &rect)
 {
     QLayout::setGeometry(rect);
@@ -208,18 +202,5 @@ int FlowLayout::smartSpacing(QStyle::PixelMetric pm) const
         return pw->style()->pixelMetric(pm, nullptr, pw);
     } else {
         return static_cast<QLayout *>(parent)->spacing();
-    }
-}
-
-void FlowLayout::updateParentGeometry() const
-{
-    auto *parentWidget = qobject_cast<QWidget *>(parent());
-    if (!parentWidget) {
-        return;
-    }
-
-    parentWidget->updateGeometry();
-    if (QWidget *outerWidget = parentWidget->parentWidget()) {
-        outerWidget->updateGeometry();
     }
 }
