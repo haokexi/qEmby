@@ -21,6 +21,7 @@ public:
     void loadMedia(const QString &url, const QString &serverId = QString(),
                    bool forceRelay = false);
     bool retryWithRelay();
+    bool startupRateLimitedBeforeMedia() const;
     void play();
     void pause();
     void stop();

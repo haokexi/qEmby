@@ -1603,6 +1603,11 @@ void PlayerView::setupUi()
                 {
                     return;
                 }
+                if (reason == QLatin1String("error") &&
+                    retryStartupRateLimitedMediaSource())
+                {
+                    return;
+                }
                 m_isPlaybackFinished = (reason == QLatin1String("eof"));
                 m_isPlaying = false;
                 m_isBuffering = false;
@@ -1673,6 +1678,74 @@ bool PlayerView::retryPrematurePlaybackEndWithRelay()
     {
         m_playPauseBtn->setIcon(QIcon(":/svg/player/pause.svg"));
     }
+    return true;
+}
+
+bool PlayerView::retryStartupRateLimitedMediaSource()
+{
+    if (!m_mpvWidget || !m_core || !m_core->mediaService() ||
+        m_isViewTearingDown || m_hasReportedStop ||
+        !m_mpvWidget->startupRateLimitedBeforeMedia())
+    {
+        return false;
+    }
+
+    const QList<MediaSourceInfo> &sources = m_currentMediaItem.mediaSources;
+    const int fallbackIndex =
+        MediaSourcePreferenceUtils::resolveNearestUnattemptedMediaSourceIndex(
+            sources, m_currentMediaSourceInfo,
+            m_attemptedMediaSourceIds);
+    if (fallbackIndex < 0 || fallbackIndex >= sources.size())
+    {
+        qWarning() << "[PlayerView] Startup source fallback exhausted"
+                   << "| mediaId:" << m_currentMediaId
+                   << "| failedSourceId:" << m_currentMediaSourceId
+                   << "| attemptedCount:"
+                   << m_attemptedMediaSourceIds.size();
+        return false;
+    }
+
+    MediaSourceInfo fallbackSource = sources.at(fallbackIndex);
+    PlayerPreferenceUtils::applyPreferredStreamRules(
+        fallbackSource,
+        ConfigStore::instance()->get<QString>(ConfigKeys::PlayerAudioLang,
+                                              "auto"),
+        ConfigStore::instance()->get<QString>(ConfigKeys::PlayerSubLang,
+                                              "auto"));
+
+    const QString fallbackUrl = m_core->mediaService()->getStreamUrl(
+        m_currentMediaId, fallbackSource);
+    if (fallbackUrl.isEmpty())
+    {
+        return false;
+    }
+
+    const QString failedSourceId = m_currentMediaSourceId;
+    const double resumeSeconds =
+        qMax(m_currentPosition, m_pendingSeekSeconds);
+    const long long resumeTicks = static_cast<long long>(
+        qMax(0.0, resumeSeconds) * 10000000.0);
+    const QString mediaId = m_currentMediaId;
+    const QString title = m_fullTitle;
+    PlayerLaunchContext fallbackContext;
+    fallbackContext.mediaItem = m_currentMediaItem;
+    fallbackContext.selectedSource = fallbackSource;
+
+    if (!reportPlaybackStoppedOnce())
+    {
+        return false;
+    }
+
+    qWarning() << "[PlayerView] Startup source was rate limited; trying "
+                  "alternate source"
+               << "| mediaId:" << mediaId
+               << "| failedSourceId:" << failedSourceId
+               << "| fallbackSourceId:" << fallbackSource.id
+               << "| fallbackIndex:" << fallbackIndex
+               << "| resumeTicks:" << resumeTicks;
+
+    playMediaInternal(mediaId, title, fallbackUrl, resumeTicks,
+                      QVariant::fromValue(fallbackContext));
     return true;
 }
 
@@ -4717,6 +4790,17 @@ QCoro::Task<void> PlayerView::executeFetchLogo(QPointer<PlayerView> safeThis, QE
 void PlayerView::playMedia(const QString &mediaId, const QString &title, const QString &streamUrl,
                            long long startPositionTicks, const QVariant &sourceInfoVar)
 {
+    m_attemptedMediaSourceIds.clear();
+    playMediaInternal(mediaId, title, streamUrl, startPositionTicks,
+                      sourceInfoVar);
+}
+
+void PlayerView::playMediaInternal(const QString &mediaId,
+                                   const QString &title,
+                                   const QString &streamUrl,
+                                   long long startPositionTicks,
+                                   const QVariant &sourceInfoVar)
+{
     const quint64 playbackGeneration = ++m_playbackGeneration;
     PlayerLaunchContext launchContext;
     MediaSourceInfo resolvedSourceInfo;
@@ -4803,6 +4887,16 @@ void PlayerView::playMedia(const QString &mediaId, const QString &title, const Q
         {
             m_currentMediaSourceInfo = m_currentMediaItem.mediaSources.first();
         }
+    }
+
+    if (!m_currentMediaSourceInfo.id.isEmpty())
+    {
+        m_currentMediaSourceId = m_currentMediaSourceInfo.id;
+    }
+    const QString attemptedSourceId = m_currentMediaSourceId.trimmed();
+    if (!attemptedSourceId.isEmpty())
+    {
+        m_attemptedMediaSourceIds.insert(attemptedSourceId);
     }
 
     m_pendingSeekSeconds = startPositionTicks / 10000000.0;
@@ -5151,10 +5245,11 @@ void PlayerView::playMedia(const QString &mediaId, const QString &title, const Q
                                       bool forceRelay,
                                       quint64 generation) -> QCoro::Task<void>
     {
-        QString sessionId;
+        PlaybackInfo playbackInfo;
         try
         {
-            sessionId = co_await s->reportPlaybackStart(mId, sId, ticks);
+            playbackInfo = co_await s->reportPlaybackStartWithInfo(
+                mId, sId, ticks);
         }
         catch (const std::exception &e)
         {
@@ -5172,6 +5267,18 @@ void PlayerView::playMedia(const QString &mediaId, const QString &title, const Q
             co_return;
         }
 
+        if (!playbackInfo.mediaSources.isEmpty())
+        {
+            safeThis->m_currentMediaItem.mediaSources =
+                playbackInfo.mediaSources;
+            qDebug() << "[PlayerView] Playback sources refreshed at session "
+                        "start"
+                     << "| mediaId:" << mId
+                     << "| sourceCount:"
+                     << playbackInfo.mediaSources.size();
+        }
+
+        const QString sessionId = playbackInfo.playSessionId;
         safeThis->m_currentPlaySessionId = sessionId;
         const QString sessionStreamUrl =
             s->getSessionStreamUrl(playbackUrl, sessionId);

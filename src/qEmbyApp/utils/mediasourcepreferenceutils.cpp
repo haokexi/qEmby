@@ -6,6 +6,7 @@
 #include <QHash>
 #include <QRegularExpression>
 #include <algorithm>
+#include <tuple>
 
 namespace {
 
@@ -515,6 +516,73 @@ int resolvePreferredMediaSourceIndex(const QList<MediaSourceInfo> &mediaSources,
     }
 
     return 0;
+}
+
+int resolveNearestUnattemptedMediaSourceIndex(
+    const QList<MediaSourceInfo> &mediaSources,
+    const MediaSourceInfo &currentSource,
+    const QSet<QString> &attemptedSourceIds) {
+    QSet<QString> normalizedAttemptedIds;
+    for (const QString &sourceId : attemptedSourceIds) {
+        normalizedAttemptedIds.insert(sourceId.trimmed().toLower());
+    }
+
+    const MediaStreamInfo *currentVideo = findPrimaryVideoStream(currentSource);
+    const bool currentDimensionsKnown =
+        currentVideo && currentVideo->width > 0 && currentVideo->height > 0;
+    const bool currentBitrateKnown = currentVideo && currentVideo->bitRate > 0;
+    const QString currentContainer = currentSource.container.trimmed();
+
+    int bestIndex = -1;
+    std::tuple<int, int, qint64, int, qint64, int> bestScore;
+    for (int sourceIndex = 0; sourceIndex < mediaSources.size(); ++sourceIndex) {
+        const MediaSourceInfo &candidate = mediaSources[sourceIndex];
+        const QString candidateId = candidate.id.trimmed();
+        if (candidateId.isEmpty() ||
+            normalizedAttemptedIds.contains(candidateId.toLower())) {
+            continue;
+        }
+
+        const MediaStreamInfo *candidateVideo =
+            findPrimaryVideoStream(candidate);
+        const bool candidateDimensionsKnown =
+            candidateVideo && candidateVideo->width > 0 &&
+            candidateVideo->height > 0;
+        const bool candidateBitrateKnown =
+            candidateVideo && candidateVideo->bitRate > 0;
+
+        const int containerPenalty =
+            !currentContainer.isEmpty() &&
+                    currentContainer.compare(candidate.container.trimmed(),
+                                             Qt::CaseInsensitive) != 0
+                ? 1
+                : 0;
+        const int dimensionsMissingPenalty =
+            currentDimensionsKnown && !candidateDimensionsKnown ? 1 : 0;
+        const qint64 dimensionDistance =
+            currentDimensionsKnown && candidateDimensionsKnown
+                ? qAbs(static_cast<qint64>(currentVideo->width) -
+                       candidateVideo->width) +
+                      qAbs(static_cast<qint64>(currentVideo->height) -
+                           candidateVideo->height)
+                : 0;
+        const int bitrateMissingPenalty =
+            currentBitrateKnown && !candidateBitrateKnown ? 1 : 0;
+        const qint64 bitrateDistance =
+            currentBitrateKnown && candidateBitrateKnown
+                ? qAbs(currentVideo->bitRate - candidateVideo->bitRate)
+                : 0;
+        const auto score = std::make_tuple(
+            containerPenalty, dimensionsMissingPenalty, dimensionDistance,
+            bitrateMissingPenalty, bitrateDistance, sourceIndex);
+
+        if (bestIndex < 0 || score < bestScore) {
+            bestIndex = sourceIndex;
+            bestScore = score;
+        }
+    }
+
+    return bestIndex;
 }
 
 } 

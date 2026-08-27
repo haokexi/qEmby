@@ -319,6 +319,12 @@ bool MpvWidget::retryWithRelay() {
     return true;
 }
 
+bool MpvWidget::startupRateLimitedBeforeMedia() const {
+    return m_usingStreamRelay && m_streamRelay &&
+           m_streamRelay->terminalHttpStatus() == 429 &&
+           !m_streamRelay->hasStartedSuccessfulMediaResponse();
+}
+
 void MpvWidget::play() {
     m_controller->setProperty("pause", false);
 }

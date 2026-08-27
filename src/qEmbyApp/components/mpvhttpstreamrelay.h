@@ -23,6 +23,11 @@ public:
     QUrl prepare(const QUrl &targetUrl, const QString &serverId,
                  const QNetworkProxy &proxy);
     void stop();
+    int terminalHttpStatus() const { return m_terminalHttpStatus; }
+    bool hasStartedSuccessfulMediaResponse() const
+    {
+        return m_hasStartedSuccessfulMediaResponse;
+    }
 
 Q_SIGNALS:
     void upstreamSpeedChanged(qint64 bytesPerSecond);
@@ -81,6 +86,8 @@ private:
     // Keep the release deadline across stop()/prepare() target changes.
     qint64 m_upstreamNotBeforeMs = 0;
     qint64 m_bytesRelayedSinceLastTick = 0;
+    int m_terminalHttpStatus = 0;
+    bool m_hasStartedSuccessfulMediaResponse = false;
 };
 
 #endif 

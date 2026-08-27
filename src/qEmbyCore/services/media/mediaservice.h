@@ -174,6 +174,7 @@ public:
                                 const QString& playSessionId) const;
 
     QCoro::Task<QString> reportPlaybackStart(QString itemId, QString mediaSourceId, long long positionTicks);
+    QCoro::Task<PlaybackInfo> reportPlaybackStartWithInfo(QString itemId, QString mediaSourceId, long long positionTicks);
     QCoro::Task<void> reportPlaybackProgress(QString itemId, QString mediaSourceId, long long positionTicks, bool isPaused, QString playSessionId);
     QCoro::Task<void> reportPlaybackStopped(QString itemId, QString mediaSourceId, long long positionTicks, QString playSessionId);
 

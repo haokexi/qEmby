@@ -1,4 +1,5 @@
 #include "networkmanager.h"
+#include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonParseError>
 #include <QJsonValue>
@@ -91,7 +92,13 @@ NetworkManager::NetworkManager(QObject *parent)
 NetworkManager::~NetworkManager() {}
 
 void NetworkManager::applyHeaders(QNetworkRequest& request, const QMap<QString, QString>& headers) {
-    
+    QByteArray userAgent = QByteArrayLiteral("qEmby");
+    const QByteArray version = QCoreApplication::applicationVersion().toUtf8();
+    if (!version.isEmpty()) {
+        userAgent += '/' + version;
+    }
+    request.setRawHeader(QByteArrayLiteral("User-Agent"), userAgent);
+
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
     

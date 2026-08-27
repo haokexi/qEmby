@@ -2,6 +2,7 @@
 #define MEDIASOURCEPREFERENCEUTILS_H
 
 #include <QList>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <models/media/playbackinfo.h>
@@ -12,6 +13,11 @@ QStringList splitPreferredVersionRules(const QString &rawRules);
 
 int resolvePreferredMediaSourceIndex(const QList<MediaSourceInfo> &mediaSources,
                                      const QString &rawRules);
+
+int resolveNearestUnattemptedMediaSourceIndex(
+    const QList<MediaSourceInfo> &mediaSources,
+    const MediaSourceInfo &currentSource,
+    const QSet<QString> &attemptedSourceIds);
 
 } 
 

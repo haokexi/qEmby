@@ -115,6 +115,8 @@ void MpvHttpStreamRelay::stop()
     m_resolvedTargetUrl.clear();
     m_serverId.clear();
     m_streamToken.clear();
+    m_terminalHttpStatus = 0;
+    m_hasStartedSuccessfulMediaResponse = false;
 }
 
 void MpvHttpStreamRelay::onNewConnection()
@@ -628,6 +630,11 @@ void MpvHttpStreamRelay::sendReplyHeaders(QTcpSocket *socket)
     if (socket->write(response) >= 0)
     {
         it->headersSent = true;
+        m_terminalHttpStatus = statusCode >= 400 ? statusCode : 0;
+        if (!it->headOnly && statusCode >= 200 && statusCode < 300)
+        {
+            m_hasStartedSuccessfulMediaResponse = true;
+        }
     }
 }
 

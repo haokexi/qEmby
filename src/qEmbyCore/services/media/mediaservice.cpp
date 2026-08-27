@@ -1775,7 +1775,16 @@ QString MediaService::getSessionStreamUrl(const QString &streamUrl,
     return playbackUrl.toString(QUrl::FullyEncoded);
 }
 
-QCoro::Task<QString> MediaService::reportPlaybackStart(QString itemId, QString mediaSourceId, long long positionTicks)
+QCoro::Task<QString> MediaService::reportPlaybackStart(
+    QString itemId, QString mediaSourceId, long long positionTicks)
+{
+    const PlaybackInfo playbackInfo = co_await reportPlaybackStartWithInfo(
+        itemId, mediaSourceId, positionTicks);
+    co_return playbackInfo.playSessionId;
+}
+
+QCoro::Task<PlaybackInfo> MediaService::reportPlaybackStartWithInfo(
+    QString itemId, QString mediaSourceId, long long positionTicks)
 {
     ensureValidProfile();
     QPointer<ServerManager> serverManager(m_serverManager);
@@ -1784,34 +1793,36 @@ QCoro::Task<QString> MediaService::reportPlaybackStart(QString itemId, QString m
         qWarning() << "[API Warning] Playback Start skipped: ServerManager is no "
                       "longer available."
                    << "ItemId:" << itemId << "MediaSourceId:" << mediaSourceId;
-        co_return QString();
+        co_return PlaybackInfo{};
     }
     ServerProfile profile = serverManager->activeProfile();
-    QString playSessionId;
+    PlaybackInfo playbackInfo;
 
     try
     {
-        PlaybackInfo pbInfo = co_await getPlaybackInfo(itemId);
+        playbackInfo = co_await getPlaybackInfo(itemId);
         if (!serverManager)
         {
             qWarning() << "[API Warning] Playback Start aborted after "
                           "PlaybackInfo: ServerManager was destroyed."
                        << "ItemId:" << itemId;
-            co_return QString();
+            co_return PlaybackInfo{};
         }
-        playSessionId = pbInfo.playSessionId;
-        qDebug() << "[API] PlaybackInfo retrieved. ServerSessionId:" << playSessionId;
+        qDebug() << "[API] PlaybackInfo retrieved. ServerSessionId:"
+                 << playbackInfo.playSessionId
+                 << "MediaSourceCount:" << playbackInfo.mediaSources.size();
     }
     catch (const std::exception &e)
     {
         qWarning() << "[API] getPlaybackInfo failed, will use local UUID:" << e.what();
     }
-    if (playSessionId.isEmpty())
+    if (playbackInfo.playSessionId.isEmpty())
     {
-        playSessionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        playbackInfo.playSessionId =
+            QUuid::createUuid().toString(QUuid::WithoutBraces);
         qWarning() << "[API] PlaybackInfo returned empty PlaySessionId, "
                       "using local UUID as fallback:"
-                   << playSessionId;
+                   << playbackInfo.playSessionId;
     }
 
     QJsonObject payload;
@@ -1822,7 +1833,7 @@ QCoro::Task<QString> MediaService::reportPlaybackStart(QString itemId, QString m
     payload["IsPaused"] = false;
     payload["IsMuted"] = false;
     payload["CanSeek"] = true;
-    payload["PlaySessionId"] = playSessionId;
+    payload["PlaySessionId"] = playbackInfo.playSessionId;
 
     QJsonArray mediaTypes;
     mediaTypes.append("Video");
@@ -1834,7 +1845,7 @@ QCoro::Task<QString> MediaService::reportPlaybackStart(QString itemId, QString m
         qWarning() << "[API Warning] Playback Start skipped: active client is no "
                       "longer available."
                    << "ItemId:" << itemId << "MediaSourceId:" << mediaSourceId;
-        co_return QString();
+        co_return playbackInfo;
     }
 
     try
@@ -1842,13 +1853,13 @@ QCoro::Task<QString> MediaService::reportPlaybackStart(QString itemId, QString m
         co_await client->post("/Sessions/Playing", payload);
         qDebug() << "[API] Playback Started successfully."
                  << "ServerType:" << (profile.type == ServerProfile::Jellyfin ? "Jellyfin" : "Emby")
-                 << "SessionId:" << playSessionId << "ItemId:" << itemId << "MediaSourceId:" << mediaSourceId;
+                 << "SessionId:" << playbackInfo.playSessionId << "ItemId:" << itemId << "MediaSourceId:" << mediaSourceId;
     }
     catch (const std::exception &e)
     {
         qDebug() << "[API Error] Playback Start failed:" << e.what();
     }
-    co_return playSessionId;
+    co_return playbackInfo;
 }
 
 QCoro::Task<void> MediaService::reportPlaybackProgress(QString itemId, QString mediaSourceId, long long positionTicks,

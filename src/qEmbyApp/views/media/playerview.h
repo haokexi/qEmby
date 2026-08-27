@@ -26,6 +26,7 @@
 #include <QProgressBar>
 #include <QHash>
 #include <QPointer>
+#include <QSet>
 
 class QEmbyCore;
 class PlayerOverlayDialog;
@@ -107,7 +108,12 @@ private slots:
 private:
     void setupUi();
     bool retryPrematurePlaybackEndWithRelay();
+    bool retryStartupRateLimitedMediaSource();
     bool reportPlaybackStoppedOnce();
+    void playMediaInternal(const QString &mediaId, const QString &title,
+                           const QString &streamUrl,
+                           long long startPositionTicks,
+                           const QVariant &sourceInfoVar);
     void updateTitleElision();
     void updateOverlayLayout();
     void clearMediaSwitcherCache();
@@ -301,6 +307,7 @@ private:
     bool m_isPlaybackFinished = false;
     bool m_autoPlayAdvanceInProgress = false;
     quint64 m_playbackGeneration = 0;
+    QSet<QString> m_attemptedMediaSourceIds;
     bool m_isViewTearingDown = false;
     bool m_powerInhibitionHeld = false;
     bool m_isRightSidebarVisible = false; 
