@@ -1793,7 +1793,8 @@ QPushButton#refresh-btn:hover {
     background-color: #334155;
 }
 
-QLabel#library-stats-label {
+QLabel#library-stats-label,
+QLabel#library-genre-status {
     font-size: 13px;
     font-weight: 500;
     color: #94A3B8;

@@ -431,22 +431,76 @@ void MediaService::clearUserViewsCache()
     m_userViewsCache.clear();
 }
 
+QCoro::Task<QList<MediaItem>> MediaService::getLibraryGenres(QString parentId, QString includeItemTypes)
+{
+    ensureValidProfile();
+    if (parentId.trimmed().isEmpty())
+        co_return QList<MediaItem>{};
+
+    QPointer<MediaService> guard(this);
+    const ServerProfile profile = m_serverManager->activeProfile();
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("UserId"), profile.userId);
+    query.addQueryItem(QStringLiteral("ParentId"), parentId);
+    query.addQueryItem(QStringLiteral("IncludeItemTypes"), includeItemTypes);
+    query.addQueryItem(QStringLiteral("Recursive"), QStringLiteral("true"));
+    query.addQueryItem(QStringLiteral("SortBy"), QStringLiteral("SortName"));
+    query.addQueryItem(QStringLiteral("SortOrder"), QStringLiteral("Ascending"));
+    query.addQueryItem(QStringLiteral("EnableImages"), QStringLiteral("true"));
+    query.addQueryItem(QStringLiteral("EnableImageTypes"), QStringLiteral("Primary,Backdrop,Thumb"));
+    query.addQueryItem(QStringLiteral("ImageTypeLimit"), QStringLiteral("1"));
+    query.addQueryItem(QStringLiteral("EnableTotalRecordCount"), QStringLiteral("true"));
+    query.addQueryItem(QStringLiteral("Limit"), QStringLiteral("200"));
+
+    QList<MediaItem> genres;
+    QSet<QString> seenGenres;
+    int startIndex = 0;
+    while (true) {
+        query.removeAllQueryItems(QStringLiteral("StartIndex"));
+        query.addQueryItem(QStringLiteral("StartIndex"), QString::number(startIndex));
+        const QJsonObject response = co_await m_serverManager->activeClient()->get(
+            QStringLiteral("/Genres?") + query.query(QUrl::FullyEncoded));
+        if (!guard || m_serverManager->activeProfile().id != profile.id ||
+            m_serverManager->activeProfile().userId != profile.userId)
+            co_return QList<MediaItem>{};
+
+        const QJsonArray items = response.value(QStringLiteral("Items")).toArray();
+        const qsizetype previousCount = genres.size();
+        for (const QJsonValue &value : items) {
+            MediaItem genre = MediaItem::fromJson(value.toObject());
+            if (!genre.name.trimmed().isEmpty() && !seenGenres.contains(genre.name)) {
+                seenGenres.insert(genre.name);
+                genre.type = QStringLiteral("Genre");
+                genres.append(std::move(genre));
+            }
+        }
+
+        startIndex += items.size();
+        if (items.isEmpty() || genres.size() == previousCount ||
+            startIndex >= response.value(QStringLiteral("TotalRecordCount")).toInt(startIndex))
+            break;
+    }
+    co_return genres;
+}
+
 QCoro::Task<QList<MediaItem>> MediaService::getLibraryItems(const QString &parentId, const QString &sortBy,
                                                             const QString &sortOrder, const QString &filters,
                                                             const QString &includeItemTypes, int startIndex, int limit,
-                                                            bool recursive, bool includeChildCount)
+                                                            bool recursive, bool includeChildCount,
+                                                            const QString &genreFilter)
 {
     const MediaQueryPage page =
         co_await getLibraryItemsPage(parentId, sortBy, sortOrder, filters,
                                      includeItemTypes, startIndex, limit,
-                                     recursive, includeChildCount);
+                                     recursive, includeChildCount, genreFilter);
     co_return page.items;
 }
 
 QCoro::Task<MediaQueryPage> MediaService::getLibraryItemsPage(const QString &parentId, const QString &sortBy,
                                                               const QString &sortOrder, const QString &filters,
                                                               const QString &includeItemTypes, int startIndex, int limit,
-                                                              bool recursive, bool includeChildCount)
+                                                              bool recursive, bool includeChildCount,
+                                                              const QString &genreFilter)
 {
     ensureValidProfile();
     ServerProfile profile = m_serverManager->activeProfile();
@@ -484,6 +538,14 @@ QCoro::Task<MediaQueryPage> MediaService::getLibraryItemsPage(const QString &par
         path += QString("&SortOrder=%1").arg(sortOrder);
     if (!filters.isEmpty())
         path += QString("&Filters=%1").arg(filters);
+    if (!genreFilter.isEmpty()) {
+        QUrl url(path);
+        QUrlQuery query(url);
+        query.addQueryItem(QStringLiteral("Genres"),
+                          QString::fromUtf8(QUrl::toPercentEncoding(genreFilter)));
+        url.setQuery(query);
+        path = url.toString(QUrl::FullyEncoded);
+    }
 
     QJsonObject response = co_await m_serverManager->activeClient()->get(path);
     const MediaQueryPage page = parseMediaQueryPage(response, startIndex, limit);
@@ -494,6 +556,7 @@ QCoro::Task<MediaQueryPage> MediaService::getLibraryItemsPage(const QString &par
              << "| recursive=" << recursive
              << "| includeTypes=" << includeItemTypes
              << "| filters=" << filters
+             << "| genre=" << genreFilter
              << "| returned=" << page.items.size()
              << "| total=" << page.totalRecordCount;
     co_return page;

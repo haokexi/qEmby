@@ -2,6 +2,7 @@
 #include "../../components/elidedlabel.h"
 #include "../../components/mediagridwidget.h"
 #include "../../components/modernsortbutton.h"
+#include "../../managers/thememanager.h"
 #include <QButtonGroup>
 #include <QDebug>
 #include <QElapsedTimer>
@@ -59,6 +60,7 @@ LibraryView::LibraryView(QEmbyCore *core, QWidget *parent)
     headerScrollArea->setWidget(headerContainer);
 
     mainLayout->addWidget(headerScrollArea);
+    setupGenrePage(mainLayout);
     
 
     
@@ -147,7 +149,7 @@ void LibraryView::setupTopBar(QHBoxLayout *headerLayout)
     m_tabGroup->setExclusive(true);
 
     
-    QStringList tabs = {tr("All"), tr("Recent"), tr("Playlists"), tr("Collections"), tr("Favorites"), tr("Folders")};
+    QStringList tabs = {tr("All"), tr("Genres"), tr("Recent"), tr("Playlists"), tr("Collections"), tr("Favorites"), tr("Folders")};
     for (int i = 0; i < tabs.size(); ++i)
     {
         auto *btn = new QPushButton(tabs[i], m_tabBarWidget);
@@ -156,7 +158,8 @@ void LibraryView::setupTopBar(QHBoxLayout *headerLayout)
         m_tabGroup->addButton(btn, i);
         tabLayout->addWidget(btn);
     }
-    m_tabGroup->button(0)->setChecked(true);
+    m_tabGroup->button(AllTab)->setChecked(true);
+    m_tabGroup->button(GenresTab)->hide();
     connect(m_tabGroup, &QButtonGroup::idClicked, this, &LibraryView::onFilterChanged);
 
     headerLayout->addWidget(m_tabBarWidget);
@@ -210,11 +213,143 @@ void LibraryView::updateFavBtnState()
     m_favBtn->style()->polish(m_favBtn);
 }
 
+void LibraryView::setupGenrePage(QVBoxLayout *mainLayout)
+{
+    m_genrePage = new QWidget(this);
+    m_genrePage->setObjectName(QStringLiteral("library-genres-page"));
+    auto *layout = new QVBoxLayout(m_genrePage);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    auto *statusLayout = new QHBoxLayout;
+    statusLayout->setContentsMargins(20, 0, 20, 0);
+    m_genreStatusLabel = new QLabel(m_genrePage);
+    m_genreStatusLabel->setObjectName(QStringLiteral("library-genre-status"));
+    m_genreStatusLabel->setWordWrap(true);
+    m_genreRetryBtn = new QPushButton(m_genrePage);
+    m_genreRetryBtn->setObjectName(QStringLiteral("refresh-btn"));
+    m_genreRetryBtn->setFixedSize(32, 32);
+    m_genreRetryBtn->setToolTip(tr("Reload Genres"));
+    m_genreRetryBtn->setAccessibleName(tr("Reload Genres"));
+    m_genreRetryBtn->setCursor(Qt::PointingHandCursor);
+    auto updateRetryIcon = [this] {
+        m_genreRetryBtn->setIcon(ThemeManager::getAdaptiveIcon(":/svg/light/refresh.svg"));
+    };
+    updateRetryIcon();
+    connect(ThemeManager::instance(), &ThemeManager::themeChanged, this, updateRetryIcon);
+    connect(m_genreRetryBtn, &QPushButton::clicked, this, &LibraryView::loadGenres);
+
+    statusLayout->addWidget(m_genreStatusLabel);
+    statusLayout->addWidget(m_genreRetryBtn);
+    statusLayout->addStretch();
+    layout->addLayout(statusLayout);
+    m_genreGrid = new MediaGridWidget(m_core, m_genrePage);
+    m_genreGrid->setCardStyle(MediaCardDelegate::LibraryTile);
+    connect(m_genreGrid, &MediaGridWidget::itemClicked, this,
+            [this](const MediaItem &genre) { openGenre(genre.name); });
+    layout->addWidget(m_genreGrid, 1);
+    mainLayout->addWidget(m_genrePage);
+    resetGenres();
+}
+
+void LibraryView::resetGenres()
+{
+    ++m_genreRequestGeneration;
+    m_selectedGenre.clear();
+    m_genresLoaded = false;
+    m_genresLoading = false;
+    m_genreGrid->setItems({});
+    m_genreStatusLabel->hide();
+    m_genreRetryBtn->hide();
+    m_genrePage->hide();
+    m_tabGroup->button(GenresTab)->hide();
+}
+
+bool LibraryView::isShowingGenres() const
+{
+    return m_currentMode == LibraryMode && m_selectedGenre.isEmpty() &&
+           m_tabGroup->checkedId() == GenresTab;
+}
+
+void LibraryView::updateLibraryTitle()
+{
+    const QString title = m_selectedGenre.isEmpty()
+        ? m_currentLibraryName
+        : m_currentLibraryName + QStringLiteral(" / ") + m_selectedGenre;
+    m_titleLabel->setFullText(title);
+    m_titleLabel->ensurePolished();
+    m_titleLabel->setMaximumWidth(QFontMetrics(m_titleLabel->font()).horizontalAdvance(title) + 15);
+}
+
+void LibraryView::openGenre(const QString &genre)
+{
+    m_selectedGenre = genre;
+    updateLibraryTitle();
+    m_tabBarWidget->hide();
+    onFilterChanged();
+}
+
+bool LibraryView::handleBackNavigation()
+{
+    if (m_currentMode != LibraryMode || m_selectedGenre.isEmpty())
+        return false;
+
+    m_selectedGenre.clear();
+    updateLibraryTitle();
+    m_tabBarWidget->show();
+    m_tabGroup->button(GenresTab)->setChecked(true);
+    onFilterChanged();
+    return true;
+}
+
+QCoro::Task<void> LibraryView::loadGenres()
+{
+    if (m_genresLoaded || m_genresLoading)
+        co_return;
+
+    QPointer<LibraryView> guard(this);
+    const int generation = ++m_genreRequestGeneration;
+    const QString libraryId = m_currentLibraryId;
+    const QString includeTypes = m_currentMediaItem.collectionType == "movies"
+                                     ? QStringLiteral("Movie") : QStringLiteral("Series");
+    m_genresLoading = true;
+    m_genreStatusLabel->setText(tr("Loading..."));
+    m_genreStatusLabel->show();
+    m_genreRetryBtn->hide();
+
+    try {
+        const QList<MediaItem> genres =
+            co_await m_core->mediaService()->getLibraryGenres(libraryId, includeTypes);
+        if (!guard || generation != m_genreRequestGeneration)
+            co_return;
+
+        m_genresLoaded = true;
+        m_genreGrid->setItems(genres);
+        m_genreStatusLabel->setText(tr("No Genres"));
+        m_genreStatusLabel->setVisible(genres.isEmpty());
+        if (isShowingGenres())
+            m_statsLabel->setText(tr("%1 Genres").arg(genres.size()));
+    } catch (const std::exception &e) {
+        if (!guard || generation != m_genreRequestGeneration)
+            co_return;
+        m_genreStatusLabel->setText(tr("Error Loading Genres"));
+        m_genreRetryBtn->show();
+        if (isShowingGenres())
+            m_statsLabel->clear();
+        qWarning() << "[LibraryView] Failed to load genres:" << e.what();
+    }
+    m_genresLoading = false;
+}
+
 
 QCoro::Task<void> LibraryView::loadLibrary(const QString &libraryId, const QString &libraryName)
 {
     
     QPointer<LibraryView> guard(this);
+    const int viewGeneration = ++m_viewGeneration;
+    ++m_requestGeneration;
+    resetPaginationState();
+    resetGenres();
 
     QElapsedTimer perfTimer;
     perfTimer.start();
@@ -222,6 +357,7 @@ QCoro::Task<void> LibraryView::loadLibrary(const QString &libraryId, const QStri
 
     m_currentMode = LibraryMode;
     m_currentLibraryId = libraryId;
+    m_currentLibraryName = libraryName;
     m_currentMediaItem = MediaItem(); 
 
     m_titleLabel->setFullText(libraryName);
@@ -237,10 +373,10 @@ QCoro::Task<void> LibraryView::loadLibrary(const QString &libraryId, const QStri
     m_sortButton->show();
 
     
-    m_tabGroup->button(0)->setText(tr("All"));
+    m_tabGroup->button(AllTab)->setText(tr("All"));
 
     m_tabGroup->blockSignals(true);
-    m_tabGroup->button(0)->setChecked(true);
+    m_tabGroup->button(AllTab)->setChecked(true);
     m_tabGroup->blockSignals(false);
 
     m_sortButton->blockSignals(true);
@@ -267,7 +403,7 @@ QCoro::Task<void> LibraryView::loadLibrary(const QString &libraryId, const QStri
             
             MediaItem detail = co_await m_core->mediaService()->getItemDetail(libraryId);
             qDebug() << "[LibraryView] getItemDetail completed" << "| elapsed=" << perfTimer.elapsed() << "ms";
-            if (!guard)
+            if (!guard || viewGeneration != m_viewGeneration)
                 co_return; 
 
             
@@ -280,23 +416,23 @@ QCoro::Task<void> LibraryView::loadLibrary(const QString &libraryId, const QStri
                 
                 if (detail.collectionType == "movies")
                 {
-                    m_tabGroup->button(0)->setText(tr("Movies"));
+                    m_tabGroup->button(AllTab)->setText(tr("Movies"));
                 }
                 else if (detail.collectionType == "tvshows")
                 {
-                    m_tabGroup->button(0)->setText(tr("Shows"));
+                    m_tabGroup->button(AllTab)->setText(tr("Shows"));
                 }
                 else if (detail.collectionType == "music")
                 {
-                    m_tabGroup->button(0)->setText(tr("Music"));
+                    m_tabGroup->button(AllTab)->setText(tr("Music"));
                 }
                 else if (detail.collectionType == "homevideos" || detail.collectionType == "photos")
                 {
-                    m_tabGroup->button(0)->setText(tr("Videos"));
+                    m_tabGroup->button(AllTab)->setText(tr("Videos"));
                 }
                 else
                 {
-                    m_tabGroup->button(0)->setText(tr("All"));
+                    m_tabGroup->button(AllTab)->setText(tr("All"));
                 }
 
                 
@@ -328,13 +464,17 @@ QCoro::Task<void> LibraryView::loadLibrary(const QString &libraryId, const QStri
         }
         catch (const std::exception &e)
         {
-            if (!guard)
+            if (!guard || viewGeneration != m_viewGeneration)
                 co_return; 
             qDebug() << "Failed to detect library type details: " << e.what();
         }
     }
 
     
+    m_tabGroup->button(GenresTab)->setVisible(
+        m_currentMediaItem.collectionType == "movies" ||
+        m_currentMediaItem.collectionType == "tvshows");
+
     qDebug() << "[LibraryView] entering onFilterChanged" << "| elapsed=" << perfTimer.elapsed() << "ms";
     co_await onFilterChanged();
     qDebug() << "[LibraryView] loadLibrary END" << "| totalElapsed=" << perfTimer.elapsed() << "ms";
@@ -345,6 +485,10 @@ QCoro::Task<void> LibraryView::loadPerson(const QString &personId, const QString
 {
     
     QPointer<LibraryView> guard(this);
+    const int viewGeneration = ++m_viewGeneration;
+    ++m_requestGeneration;
+    resetPaginationState();
+    resetGenres();
 
     m_currentMode = PersonMode;
     m_currentPersonId = personId;
@@ -384,7 +528,7 @@ QCoro::Task<void> LibraryView::loadPerson(const QString &personId, const QString
         {
             
             MediaItem detail = co_await m_core->mediaService()->getItemDetail(personId);
-            if (!guard)
+            if (!guard || viewGeneration != m_viewGeneration)
                 co_return; 
 
             if (detail.id == m_currentPersonId)
@@ -397,7 +541,7 @@ QCoro::Task<void> LibraryView::loadPerson(const QString &personId, const QString
         }
         catch (const std::exception &e)
         {
-            if (!guard)
+            if (!guard || viewGeneration != m_viewGeneration)
                 co_return; 
             qDebug() << "Failed to fetch person details: " << e.what();
         }
@@ -410,6 +554,8 @@ QCoro::Task<void> LibraryView::loadPerson(const QString &personId, const QString
 QCoro::Task<void> LibraryView::loadFiltered(const QString &filterType, const QString &filterValue)
 {
     QPointer<LibraryView> guard(this);
+    ++m_viewGeneration;
+    resetGenres();
 
     m_currentMode = FilteredMode;
     m_filterType = filterType;
@@ -455,7 +601,20 @@ QCoro::Task<void> LibraryView::onFilterChanged()
     resetPaginationState();
 
     m_mediaGrid->setItems(QList<MediaItem>());
+    const bool showGenres = isShowingGenres();
+    m_mediaGrid->setVisible(!showGenres);
+    m_genrePage->setVisible(showGenres);
+    m_sortButton->setVisible(!showGenres);
+    m_viewSwitchBtn->setVisible(!showGenres);
     m_statsLabel->setText(tr("Loading..."));
+    if (showGenres) {
+        m_mediaGrid->setLoading(false);
+        if (m_genresLoaded)
+            m_statsLabel->setText(tr("%1 Genres").arg(m_genreGrid->itemCount()));
+        else
+            co_await loadGenres();
+        co_return;
+    }
 
     
     const bool shimmerEnabled =
@@ -494,6 +653,7 @@ QCoro::Task<void> LibraryView::onFilterChanged()
              << "| sortOrder=" << m_activeQuery.sortOrder
              << "| filters=" << m_activeQuery.filters
              << "| includeTypes=" << m_activeQuery.includeTypes
+             << "| genre=" << m_activeQuery.genreFilter
              << "| recursive=" << m_activeQuery.recursive;
 
     if (!isQueryValid(m_activeQuery))
@@ -540,6 +700,13 @@ LibraryView::QueryState LibraryView::buildCurrentQueryState(const QString &sortB
     query.recursive = true;
     query.needsPlaylistEnrichment = (m_currentMediaItem.type == "Playlist");
 
+    if (!m_selectedGenre.isEmpty()) {
+        query.genreFilter = m_selectedGenre;
+        query.includeTypes = m_currentMediaItem.collectionType == "movies"
+                                 ? QStringLiteral("Movie") : QStringLiteral("Series");
+        return query;
+    }
+
     if (m_currentMediaItem.type == "Folder")
     {
         query.includeTypes.clear();
@@ -557,26 +724,26 @@ LibraryView::QueryState LibraryView::buildCurrentQueryState(const QString &sortB
         return query;
     }
 
-    const int tabIdx = m_tabGroup ? m_tabGroup->checkedId() : 0;
-    if (tabIdx == 1)
+    const int tabIdx = m_tabGroup ? m_tabGroup->checkedId() : AllTab;
+    if (tabIdx == RecentTab)
     {
         query.sortBy = "DateCreated";
         query.sortOrder = "Descending";
     }
-    if (tabIdx == 2)
+    if (tabIdx == PlaylistsTab)
     {
         query.includeTypes = "Playlist";
     }
-    if (tabIdx == 3)
+    if (tabIdx == CollectionsTab)
     {
         query.includeTypes = "BoxSet";
     }
-    if (tabIdx == 4)
+    if (tabIdx == FavoritesTab)
     {
         query.filters = "IsFavorite";
         query.includeTypes = "Movie,Series,Audio,Video,BoxSet,Playlist";
     }
-    if (tabIdx == 5)
+    if (tabIdx == FoldersTab)
     {
         query.includeTypes.clear();
         query.sortBy = "IsFolder,SortName";
@@ -649,7 +816,7 @@ QCoro::Task<void> LibraryView::loadInitialItems()
             co_return co_await m_core->mediaService()->getLibraryItemsPage(
                 pageQuery.targetId, pageQuery.sortBy, pageQuery.sortOrder,
                 pageQuery.filters, pageQuery.includeTypes, startIndex, limit,
-                pageQuery.recursive, pageQuery.includeChildCount);
+                pageQuery.recursive, pageQuery.includeChildCount, pageQuery.genreFilter);
         }
     };
 
@@ -787,7 +954,8 @@ QCoro::Task<void> LibraryView::onLoadMoreRequested()
             co_return co_await m_core->mediaService()->getLibraryItemsPage(
                 pageQuery.targetId, pageQuery.sortBy, pageQuery.sortOrder,
                 pageQuery.filters, pageQuery.includeTypes, pageStartIndex,
-                pageLimit, pageQuery.recursive, pageQuery.includeChildCount);
+                pageLimit, pageQuery.recursive, pageQuery.includeChildCount,
+                pageQuery.genreFilter);
         }
     };
 

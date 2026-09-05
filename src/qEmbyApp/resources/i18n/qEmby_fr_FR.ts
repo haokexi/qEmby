@@ -257,6 +257,26 @@ Erreur : </translation>
 <context>
     <name>LibraryView</name>
     <message>
+        <source>Genres</source>
+        <translation>Genres</translation>
+    </message>
+    <message>
+        <source>%1 Genres</source>
+        <translation>%1 genres</translation>
+    </message>
+    <message>
+        <source>No Genres</source>
+        <translation>Aucun genre</translation>
+    </message>
+    <message>
+        <source>Reload Genres</source>
+        <translation>Recharger les genres</translation>
+    </message>
+    <message>
+        <source>Error Loading Genres</source>
+        <translation>Erreur de chargement des genres</translation>
+    </message>
+    <message>
         <source>All</source>
         <translation>Tout</translation>
     </message>

@@ -30,6 +30,7 @@ public:
     QCoro::Task<void> loadLibrary(const QString& libraryId, const QString& libraryName);
     QCoro::Task<void> loadPerson(const QString& personId, const QString& personName);
     QCoro::Task<void> loadFiltered(const QString& filterType, const QString& filterValue);
+    bool handleBackNavigation() override;
 
 protected:
     
@@ -42,6 +43,16 @@ private slots:
     QCoro::Task<void> onLoadMoreRequested();
 
 private:
+    enum LibraryTab {
+        AllTab,
+        GenresTab,
+        RecentTab,
+        PlaylistsTab,
+        CollectionsTab,
+        FavoritesTab,
+        FoldersTab
+    };
+
     struct QueryState {
         ViewMode mode = LibraryMode;
         QString targetId;
@@ -58,6 +69,12 @@ private:
     };
 
     void setupTopBar(class QHBoxLayout* headerLayout);
+    void setupGenrePage(class QVBoxLayout* mainLayout);
+    void resetGenres();
+    bool isShowingGenres() const;
+    void openGenre(const QString& genre);
+    void updateLibraryTitle();
+    QCoro::Task<void> loadGenres();
     
     void updateFavBtnState();
     QCoro::Task<QList<MediaItem>> enrichPlaylistItemsForRemoval(QList<MediaItem> items);
@@ -76,6 +93,7 @@ private:
 
     ViewMode m_currentMode;        
     QString m_currentLibraryId;
+    QString m_currentLibraryName;
     QString m_currentPersonId;     
     QString m_filterType;          
     QString m_filterValue;         
@@ -90,6 +108,15 @@ private:
     ModernSortButton* m_sortButton; 
     QPushButton* m_viewSwitchBtn;
     QLabel* m_statsLabel;
+    QWidget* m_genrePage;
+    MediaGridWidget* m_genreGrid;
+    QLabel* m_genreStatusLabel;
+    QPushButton* m_genreRetryBtn;
+    QString m_selectedGenre;
+    bool m_genresLoaded = false;
+    bool m_genresLoading = false;
+    int m_genreRequestGeneration = 0;
+    int m_viewGeneration = 0;
 
     MediaGridWidget* m_mediaGrid;
     QueryState m_activeQuery;

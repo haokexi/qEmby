@@ -297,6 +297,26 @@ Error: </source>
 <context>
     <name>LibraryView</name>
     <message>
+        <source>Genres</source>
+        <translation>类型</translation>
+    </message>
+    <message>
+        <source>%1 Genres</source>
+        <translation>%1 个类型</translation>
+    </message>
+    <message>
+        <source>No Genres</source>
+        <translation>暂无类型</translation>
+    </message>
+    <message>
+        <source>Reload Genres</source>
+        <translation>重新加载类型</translation>
+    </message>
+    <message>
+        <source>Error Loading Genres</source>
+        <translation>类型加载失败</translation>
+    </message>
+    <message>
         <source>All</source>
         <translation>全部</translation>
     </message>

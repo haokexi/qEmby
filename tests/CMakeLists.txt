@@ -28,3 +28,8 @@ add_test(NAME qemby_layout_feedback_test
 set_tests_properties(qemby_layout_feedback_test PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
+
+qt_add_executable(qemby_media_genre_filter_test mediagenrefiltertest.cpp)
+target_link_libraries(qemby_media_genre_filter_test PRIVATE Qt6::Test qEmbyCore)
+add_test(NAME qemby_media_genre_filter_test COMMAND qemby_media_genre_filter_test)
+set_tests_properties(qemby_media_genre_filter_test PROPERTIES TIMEOUT 30)
