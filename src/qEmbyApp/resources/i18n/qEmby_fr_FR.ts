@@ -1603,6 +1603,18 @@ Sélectionnez un fichier, collez URL d'une image ou faites-en glisser une.</tran
 <context>
     <name>PlayerView</name>
     <message>
+        <source>Retry</source>
+        <translation>Réessayer</translation>
+    </message>
+    <message>
+        <source>The server is limiting playback requests. Please wait before retrying, or choose another video.</source>
+        <translation>Le serveur limite les demandes de lecture. Veuillez patienter avant de réessayer ou choisir une autre vidéo.</translation>
+    </message>
+    <message>
+        <source>Playback failed. Please retry or choose another video.</source>
+        <translation>La lecture a échoué. Veuillez réessayer ou choisir une autre vidéo.</translation>
+    </message>
+    <message>
         <source>Continue Watching</source>
         <translation>Continuer à regarder</translation>
     </message>

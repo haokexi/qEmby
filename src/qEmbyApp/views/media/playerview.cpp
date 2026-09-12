@@ -1075,6 +1075,12 @@ void PlayerView::resumePlayback()
     if (!m_mpvWidget || m_currentMediaId.isEmpty())
         return;
 
+    if (m_hasPlaybackError)
+    {
+        retryFailedPlayback();
+        return;
+    }
+
     
     QString newStreamUrl = m_originalStreamUrl;
     if (m_currentSourceInfoVar.isValid())
@@ -1138,10 +1144,44 @@ void PlayerView::setupUi()
     
     m_loadingOverlay->setAttribute(Qt::WA_TransparentForMouseEvents, true);
 
+    m_playbackErrorPanel = new QWidget(this);
+    m_playbackErrorPanel->setObjectName("playerPlaybackErrorPanel");
+    m_playbackErrorPanel->setStyleSheet(QStringLiteral(
+        "QWidget#playerPlaybackErrorPanel { background: #202024; border-radius: 12px; }"
+        "QWidget#playerPlaybackErrorPanel QLabel { color: white; background: transparent; }"
+        "QWidget#playerPlaybackErrorPanel QPushButton { color: white; background: #414147; "
+        "border: none; border-radius: 6px; padding: 8px 20px; }"
+        "QWidget#playerPlaybackErrorPanel QPushButton:hover { background: #55555c; }"));
+    auto *errorLayout = new QVBoxLayout(m_playbackErrorPanel);
+    errorLayout->setContentsMargins(24, 24, 24, 24);
+    errorLayout->setSpacing(16);
+    m_playbackErrorLabel = new QLabel(m_playbackErrorPanel);
+    m_playbackErrorLabel->setObjectName("playerPlaybackErrorLabel");
+    m_playbackErrorLabel->setWordWrap(true);
+    m_playbackErrorLabel->setAlignment(Qt::AlignCenter);
+    errorLayout->addWidget(m_playbackErrorLabel);
+    auto *errorActions = new QHBoxLayout;
+    auto *retryButton = new QPushButton(tr("Retry"), m_playbackErrorPanel);
+    retryButton->setObjectName("playerPlaybackRetryButton");
+    retryButton->setCursor(Qt::PointingHandCursor);
+    connect(retryButton, &QPushButton::clicked, this, &PlayerView::retryFailedPlayback);
+    auto *backButton = new QPushButton(tr("Back"), m_playbackErrorPanel);
+    backButton->setObjectName("playerPlaybackBackButton");
+    backButton->setCursor(Qt::PointingHandCursor);
+    connect(backButton, &QPushButton::clicked, this, &PlayerView::onBackClicked);
+    errorActions->addStretch();
+    errorActions->addWidget(retryButton);
+    errorActions->addWidget(backButton);
+    errorActions->addStretch();
+    errorLayout->addLayout(errorActions);
+    m_playbackErrorPanel->hide();
+
     
     connect(m_mpvWidget->controller(), &MpvController::fileLoaded, this,
             [this]()
             {
+                if (m_isViewTearingDown || m_hasReportedStop)
+                    return;
                 m_isBuffering = false;
                 updateLoadingState();
                 applySubtitleStyleSettings();
@@ -1159,6 +1199,7 @@ void PlayerView::setupUi()
 
     
     m_rightTrigger = new QWidget(this);
+    m_rightTrigger->setObjectName("playerRightTrigger");
     m_rightTrigger->setFixedWidth(15);
     m_rightTrigger->setCursor(Qt::PointingHandCursor);
     m_rightTrigger->setAttribute(Qt::WA_TransparentForMouseEvents, false);
@@ -1596,6 +1637,8 @@ void PlayerView::setupUi()
     connect(m_mpvWidget->controller(), &MpvController::endOfFile, this,
             [this](const QString &reason)
             {
+                if (m_isViewTearingDown || m_hasReportedStop)
+                    return;
                 qDebug() << "[PlayerView] MPV end of file"
                          << "| reason=" << reason;
                 if (reason == QLatin1String("error") &&
@@ -1608,6 +1651,11 @@ void PlayerView::setupUi()
                 {
                     return;
                 }
+                if (reason == QLatin1String("error"))
+                {
+                    handlePlaybackError();
+                    return;
+                }
                 m_isPlaybackFinished = (reason == QLatin1String("eof"));
                 m_isPlaying = false;
                 m_isBuffering = false;
@@ -1617,14 +1665,6 @@ void PlayerView::setupUi()
                 if (m_playPauseBtn)
                 {
                     m_playPauseBtn->setIcon(QIcon(":/svg/player/play.svg"));
-                }
-                if (reason == QLatin1String("error"))
-                {
-                    reportPlaybackStoppedOnce();
-                    if (m_mpvWidget)
-                    {
-                        m_mpvWidget->stop();
-                    }
                 }
                 if (m_isPlaybackFinished)
                 {
@@ -1749,10 +1789,48 @@ bool PlayerView::retryStartupRateLimitedMediaSource()
     return true;
 }
 
+void PlayerView::handlePlaybackError()
+{
+    const bool rateLimited = m_mpvWidget->startupRateLimitedBeforeMedia();
+    m_hasPlaybackError = true;
+    m_isPlaybackFinished = false;
+    // Stop reporting and transient playback activity, but keep this page usable.
+    stopAndReport();
+    m_loadingOverlay->forceStop();
+    m_playPauseBtn->setIcon(QIcon(":/svg/player/play.svg"));
+    m_playPauseBtn->setToolTip(tr("Retry"));
+    m_playbackErrorLabel->setText(
+        rateLimited
+            ? tr("The server is limiting playback requests. Please wait before retrying, or choose another video.")
+            : tr("Playback failed. Please retry or choose another video."));
+    m_playbackErrorPanel->show();
+    m_playbackErrorPanel->raise();
+    updateOverlayLayout();
+    showControls();
+}
+
+void PlayerView::retryFailedPlayback()
+{
+    if (!m_hasPlaybackError || m_isViewTearingDown || m_currentMediaId.isEmpty())
+        return;
+
+    // Copy the context before playMedia resets the current session and source list.
+    const QString mediaId = m_currentMediaId;
+    const QString title = m_fullTitle;
+    const QString streamUrl = m_originalStreamUrl;
+    const long long resumeTicks = static_cast<long long>(
+        qMax(0.0, qMax(m_currentPosition, m_pendingSeekSeconds)) * 10000000.0);
+    PlayerLaunchContext context;
+    context.mediaItem = m_currentMediaItem;
+    context.selectedSource = m_currentMediaSourceInfo;
+    qInfo() << "[PlayerView] Retrying failed playback" << "| mediaId:" << mediaId;
+    playMedia(mediaId, title, streamUrl, resumeTicks, QVariant::fromValue(context));
+}
+
 
 void PlayerView::updateLoadingState()
 {
-    if (m_isViewTearingDown)
+    if (m_isViewTearingDown || m_hasReportedStop)
     {
         if (m_loadingOverlay)
         {
@@ -2425,7 +2503,7 @@ void PlayerView::setupRightSidebar()
 
 QCoro::Task<void> PlayerView::showRightSidebar()
 {
-    if (m_isViewTearingDown || useHudMediaSwitcher() || m_hasReportedStop)
+    if (m_isViewTearingDown || useHudMediaSwitcher())
     {
         co_return;
     }
@@ -2585,10 +2663,11 @@ bool PlayerView::reportPlaybackStoppedOnce()
 void PlayerView::stopAndReport()
 {
     ++m_playbackGeneration;
-    if (!reportPlaybackStoppedOnce())
-    {
-        return;
-    }
+    m_isPlaying = false;
+    m_isBuffering = false;
+    m_isSeeking = false;
+    // Reporting is idempotent; local cleanup must also run after a playback error.
+    reportPlaybackStoppedOnce();
 
     m_longPressHandler->setTeardown(true);
     stopTransientUiAnimations(m_isViewTearingDown);
@@ -2637,6 +2716,7 @@ void PlayerView::beginViewTeardown()
     }
 
     m_isViewTearingDown = true;
+    m_playbackErrorPanel->hide();
     updatePowerInhibition();
     setPlayerChromeVisible(false);
     qDebug() << "[PlayerView] Begin teardown: stop timers, disconnect late signals, detach animations";
@@ -2908,6 +2988,16 @@ void PlayerView::updateOverlayLayout()
     m_topHUD->setGeometry(0, 0, width(), m_topHUD->height());
     m_bottomHUD->setFixedHeight(targetBottomHudHeight);
     m_bottomHUD->setGeometry(0, height() - m_bottomHUD->height(), width(), m_bottomHUD->height());
+
+    if (m_playbackErrorPanel && m_playbackErrorPanel->isVisible())
+    {
+        const int panelWidth = qMin(480, qMax(0, width() - 32));
+        m_playbackErrorPanel->setFixedWidth(panelWidth);
+        m_playbackErrorPanel->adjustSize();
+        m_playbackErrorPanel->move((width() - panelWidth) / 2,
+                                  qMax(m_topHUD->height(),
+                                       (height() - m_playbackErrorPanel->height()) / 2));
+    }
 
     if (m_mediaSwitchDrawer)
     {
@@ -3207,7 +3297,7 @@ bool PlayerView::eventFilter(QObject *watched, QEvent *event)
 
 void PlayerView::handlePointerActivity(const QPoint &globalPos)
 {
-    if (m_isViewTearingDown || m_hasReportedStop)
+    if (m_isViewTearingDown)
     {
         return;
     }
@@ -3277,7 +3367,7 @@ bool PlayerView::areControlsFullyVisible() const
 
 void PlayerView::showControls()
 {
-    if (m_isViewTearingDown || m_hasReportedStop)
+    if (m_isViewTearingDown)
     {
         return;
     }
@@ -3341,7 +3431,7 @@ void PlayerView::showControls()
 
 void PlayerView::hideControls()
 {
-    if (m_isViewTearingDown || m_hasReportedStop)
+    if (m_isViewTearingDown || m_hasPlaybackError)
     {
         return;
     }
@@ -4801,6 +4891,9 @@ void PlayerView::playMediaInternal(const QString &mediaId,
                                    long long startPositionTicks,
                                    const QVariant &sourceInfoVar)
 {
+    if (m_isViewTearingDown)
+        return;
+
     const quint64 playbackGeneration = ++m_playbackGeneration;
     PlayerLaunchContext launchContext;
     MediaSourceInfo resolvedSourceInfo;
@@ -4819,6 +4912,10 @@ void PlayerView::playMediaInternal(const QString &mediaId,
     connect(m_mpvWidget, &MpvWidget::positionChanged, this, &PlayerView::onPositionChanged, Qt::UniqueConnection);
 
     m_hasReportedStop = false;
+    m_hasPlaybackError = false;
+    m_playbackErrorPanel->hide();
+    m_playPauseBtn->setToolTip(tr("Play/Pause"));
+    m_longPressHandler->setTeardown(false);
     m_isPlaybackFinished = false;
     m_autoPlayAdvanceInProgress = false;
     m_currentMediaId = mediaId;
@@ -5537,7 +5634,7 @@ void PlayerView::onDurationChanged(double duration)
 
 void PlayerView::onPlaybackStateChanged(bool isPaused)
 {
-    if (m_isViewTearingDown)
+    if (m_isViewTearingDown || m_hasReportedStop)
     {
         return;
     }
@@ -5559,6 +5656,13 @@ void PlayerView::onPlaybackStateChanged(bool isPaused)
 
 void PlayerView::togglePlayPause()
 {
+    if (m_isViewTearingDown)
+        return;
+    if (m_hasPlaybackError)
+    {
+        retryFailedPlayback();
+        return;
+    }
     if (m_isPlaying)
     {
         m_mpvWidget->pause();

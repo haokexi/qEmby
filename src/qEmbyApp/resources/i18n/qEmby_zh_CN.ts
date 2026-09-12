@@ -1651,6 +1651,18 @@ Choose a file, paste an image URL, or drag one onto the preview.</source>
 <context>
     <name>PlayerView</name>
     <message>
+        <source>Retry</source>
+        <translation>重试</translation>
+    </message>
+    <message>
+        <source>The server is limiting playback requests. Please wait before retrying, or choose another video.</source>
+        <translation>服务器限制了播放请求，请稍后重试，或选择其他视频。</translation>
+    </message>
+    <message>
+        <source>Playback failed. Please retry or choose another video.</source>
+        <translation>播放失败，请重试或选择其他视频。</translation>
+    </message>
+    <message>
         <source>Continue Watching</source>
         <translation>继续观看</translation>
     </message>

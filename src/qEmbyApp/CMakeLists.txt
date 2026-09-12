@@ -10,6 +10,10 @@ set(APP_QRC_FILES resources/resources.qrc)
 
 file(GLOB_RECURSE APP_HEADERS CONFIGURE_DEPENDS "*.h")
 file(GLOB_RECURSE APP_SOURCES CONFIGURE_DEPENDS "*.cpp")
+list(REMOVE_ITEM APP_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/main.cpp")
+
+# Share the production UI implementation with the playback regression tests.
+add_library(qEmbyAppObjects OBJECT ${APP_HEADERS} ${APP_SOURCES})
  
 # ==========================================
 # 平台原生资源配置 (如 Windows .exe 图标)
@@ -20,12 +24,12 @@ endif()
 
 qt_add_executable(qEmbyApp
     MANUAL_FINALIZATION
-    ${APP_HEADERS} 
-    ${APP_SOURCES}
+    main.cpp
     ${TS_FILES}
     ${APP_QRC_FILES}
     ${APP_NATIVE_RESOURCES} # <-- 将 .rc 资源文件加入编译列表
 )
+target_link_libraries(qEmbyApp PRIVATE qEmbyAppObjects)
 
 # ==========================================
 # 集成 libmpv 播放器核心
@@ -33,6 +37,7 @@ qt_add_executable(qEmbyApp
 # Linux / macOS 优先使用系统安装的 libmpv
 # ==========================================
 qemby_link_libmpv(qEmbyApp)
+qemby_link_libmpv(qEmbyAppObjects)
 
 # ==========================================
 # 集成 MDK 播放器核心
@@ -62,12 +67,12 @@ qemby_link_libmpv(qEmbyApp)
 #     COMMENT "正在自动拷贝 mdk.dll 到输出目录..."
 # )
 
-target_compile_definitions(qEmbyApp PRIVATE
+target_compile_definitions(qEmbyAppObjects PUBLIC
     APP_NAME="${PROJECT_NAME}"
     APP_VERSION="${PROJECT_VERSION}"
 )
 
-target_link_libraries(qEmbyApp PRIVATE
+target_link_libraries(qEmbyAppObjects PUBLIC
     Qt${QT_VERSION_MAJOR}::Gui
     Qt${QT_VERSION_MAJOR}::Widgets
     Qt${QT_VERSION_MAJOR}::Network
@@ -80,18 +85,18 @@ target_link_libraries(qEmbyApp PRIVATE
     QCoro6::Network
     spdlog::spdlog
 )
-target_link_libraries(qEmbyApp PRIVATE Qt${QT_VERSION_MAJOR}::Core)
+target_link_libraries(qEmbyAppObjects PUBLIC Qt${QT_VERSION_MAJOR}::Core)
 
 if(APPLE)
-    target_link_libraries(qEmbyApp PRIVATE
+    target_link_libraries(qEmbyAppObjects PUBLIC
         "-framework CoreFoundation"
         "-framework IOKit"
     )
 endif()
 
 if(TARGET Qt${QT_VERSION_MAJOR}::DBus)
-    target_link_libraries(qEmbyApp PRIVATE Qt${QT_VERSION_MAJOR}::DBus)
-    target_compile_definitions(qEmbyApp PRIVATE QEMBY_HAS_QT_DBUS=1)
+    target_link_libraries(qEmbyAppObjects PUBLIC Qt${QT_VERSION_MAJOR}::DBus)
+    target_compile_definitions(qEmbyAppObjects PUBLIC QEMBY_HAS_QT_DBUS=1)
 endif()
 
 # # 3. 处理翻译
@@ -106,6 +111,7 @@ endif()
 if(QT_VERSION_MAJOR EQUAL 6)
     # 自动编译 TS 为 QM，并将生成的 QM 虚拟嵌入到 :/i18n/ 资源路径下
     qt_add_translations(qEmbyApp
+        SOURCE_TARGETS qEmbyApp qEmbyAppObjects qEmbyCore
         TS_FILES ${TS_FILES}
         RESOURCE_PREFIX "/i18n"
         LUPDATE_OPTIONS -no-obsolete

@@ -70,6 +70,7 @@ private slots:
     void onMpvPropertyChanged(const QString &property, const QVariant &value);
     
     void togglePlayPause();
+    void retryFailedPlayback();
     void onSliderMoved(int value);
     
     
@@ -109,6 +110,7 @@ private:
     void setupUi();
     bool retryPrematurePlaybackEndWithRelay();
     bool retryStartupRateLimitedMediaSource();
+    void handlePlaybackError();
     bool reportPlaybackStoppedOnce();
     void playMediaInternal(const QString &mediaId, const QString &title,
                            const QString &streamUrl,
@@ -200,6 +202,8 @@ private:
     QWidget *m_bottomHUD;
     PlayerStatisticsOverlay *m_statisticsOverlay;
     LoadingOverlay *m_loadingOverlay; 
+    QWidget *m_playbackErrorPanel = nullptr;
+    QLabel *m_playbackErrorLabel = nullptr;
 
     
     QLabel *m_logoLabel;
@@ -305,6 +309,7 @@ private:
     bool m_hasSetVideoSize = false; 
     bool m_hasReportedStop = false; 
     bool m_isPlaybackFinished = false;
+    bool m_hasPlaybackError = false;
     bool m_autoPlayAdvanceInProgress = false;
     quint64 m_playbackGeneration = 0;
     QSet<QString> m_attemptedMediaSourceIds;
