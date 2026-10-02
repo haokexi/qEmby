@@ -202,12 +202,13 @@ public:
 
     QCoro::Task<QString> reportPlaybackStart(QString itemId, QString mediaSourceId, long long positionTicks);
     QCoro::Task<PlaybackInfo> reportPlaybackStartWithInfo(QString itemId, QString mediaSourceId, long long positionTicks);
-    QCoro::Task<void> reportPlaybackProgress(QString itemId, QString mediaSourceId, long long positionTicks, bool isPaused, QString playSessionId);
+    QCoro::Task<void> reportPlaybackProgress(QString itemId, QString mediaSourceId, long long positionTicks, bool isPaused, QString playSessionId, long long runTimeTicks = 0);
     QCoro::Task<void> reportPlaybackStopped(QString itemId, QString mediaSourceId, long long positionTicks, QString playSessionId);
 
 Q_SIGNALS:
     
     void recommendCacheCleared();
+    void playbackStopped(const QString& serverId, const QString& userId);
 
 private:
     struct InFlightImageRequest {

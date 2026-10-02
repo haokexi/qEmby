@@ -2679,6 +2679,7 @@ bool PlayerView::reportPlaybackStoppedOnce()
     if (!m_currentMediaId.isEmpty() && m_core && m_core->mediaService())
     {
         long long currentTicks = static_cast<long long>(m_currentPosition * 10000000.0);
+        const long long durationTicks = static_cast<long long>(m_totalDuration * 10000000.0);
 
         auto *service = m_core->mediaService();
         QString mediaId = m_currentMediaId;
@@ -2690,11 +2691,11 @@ bool PlayerView::reportPlaybackStoppedOnce()
         
         
         auto taskRoutine = [](MediaService *s, QString mId, QString sId, long long ticks,
-                              QString sessId) -> QCoro::Task<void>
+                              QString sessId, long long runTimeTicks) -> QCoro::Task<void>
         {
             try
             {
-                co_await s->reportPlaybackProgress(mId, sId, ticks, true, sessId);
+                co_await s->reportPlaybackProgress(mId, sId, ticks, true, sessId, runTimeTicks);
             }
             catch (const std::exception &e)
             {
@@ -2712,7 +2713,7 @@ bool PlayerView::reportPlaybackStoppedOnce()
 
         
         
-        auto *lingeringTask = new QCoro::Task<void>(taskRoutine(service, mediaId, sourceId, currentTicks, sessionId));
+        auto *lingeringTask = new QCoro::Task<void>(taskRoutine(service, mediaId, sourceId, currentTicks, sessionId, durationTicks));
 
         
         
@@ -5581,7 +5582,8 @@ void PlayerView::reportProgressToServer()
     long long currentTicks = static_cast<long long>(m_currentPosition * 10000000.0);
     
     m_core->mediaService()->reportPlaybackProgress(m_currentMediaId, m_currentMediaSourceId, currentTicks, !m_isPlaying,
-                                                   m_currentPlaySessionId);
+                                                   m_currentPlaySessionId,
+                                                   static_cast<long long>(m_totalDuration * 10000000.0));
 
     if (m_showStatisticsOverlay)
     {
@@ -5688,10 +5690,11 @@ void PlayerView::onDurationChanged(double duration)
         return;
     }
 
-    if (std::isnan(duration) || std::isinf(duration) || duration < 0)
+    if (std::isnan(duration) || std::isinf(duration) || duration <= 0)
     {
-        duration = 0.0;
+        return;
     }
+    const bool durationDiscovered = m_totalDuration <= 0.0;
     m_totalDuration = duration;
     m_progressSlider->setMediaDuration(duration);
     m_progressSlider->setMaximum(static_cast<int>(duration));
@@ -5814,6 +5817,8 @@ void PlayerView::onDurationChanged(double duration)
         m_mpvWidget->seek(m_pendingSeekSeconds);
         m_pendingSeekSeconds = 0.0;
     }
+    if (durationDiscovered)
+        reportProgressToServer();
 }
 
 void PlayerView::onPlaybackStateChanged(bool isPaused)
@@ -5834,7 +5839,8 @@ void PlayerView::onPlaybackStateChanged(bool isPaused)
     {
         long long currentTicks = static_cast<long long>(m_currentPosition * 10000000.0);
         m_core->mediaService()->reportPlaybackProgress(m_currentMediaId, m_currentMediaSourceId, currentTicks, isPaused,
-                                                       m_currentPlaySessionId);
+                                                       m_currentPlaySessionId,
+                                                       static_cast<long long>(m_totalDuration * 10000000.0));
     }
 }
 
@@ -5890,7 +5896,8 @@ void PlayerView::onSliderMoved(int value)
     {
         long long currentTicks = static_cast<long long>(value * 10000000.0);
         m_core->mediaService()->reportPlaybackProgress(m_currentMediaId, m_currentMediaSourceId, currentTicks,
-                                                       !m_isPlaying, m_currentPlaySessionId);
+                                                       !m_isPlaying, m_currentPlaySessionId,
+                                                       static_cast<long long>(m_totalDuration * 10000000.0));
     }
 
     showControls();

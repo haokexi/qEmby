@@ -2632,6 +2632,14 @@ QCoro::Task<PlaybackInfo> MediaService::reportPlaybackStartWithInfo(
     payload["IsMuted"] = false;
     payload["CanSeek"] = true;
     payload["PlaySessionId"] = playbackInfo.playSessionId;
+    for (const MediaSourceInfo &source : playbackInfo.mediaSources)
+    {
+        if (source.id == mediaSourceId && source.runTimeTicks > 0)
+        {
+            payload["RunTimeTicks"] = source.runTimeTicks;
+            break;
+        }
+    }
 
     QJsonArray mediaTypes;
     mediaTypes.append("Video");
@@ -2661,7 +2669,7 @@ QCoro::Task<PlaybackInfo> MediaService::reportPlaybackStartWithInfo(
 }
 
 QCoro::Task<void> MediaService::reportPlaybackProgress(QString itemId, QString mediaSourceId, long long positionTicks,
-                                                       bool isPaused, QString playSessionId)
+                                                       bool isPaused, QString playSessionId, long long runTimeTicks)
 {
     if (playSessionId.isEmpty())
         co_return;
@@ -2690,6 +2698,8 @@ QCoro::Task<void> MediaService::reportPlaybackProgress(QString itemId, QString m
     mediaTypes.append("Video");
     payload["QueueableMediaTypes"] = mediaTypes;
     payload["EventName"] = isPaused ? "pause" : "timeupdate";
+    if (runTimeTicks > 0)
+        payload["RunTimeTicks"] = runTimeTicks;
 
     try
     {
@@ -2707,6 +2717,8 @@ QCoro::Task<void> MediaService::reportPlaybackStopped(QString itemId, QString me
     if (playSessionId.isEmpty())
         co_return;
     ensureValidProfile();
+    const ServerProfile profile = m_serverManager->activeProfile();
+    QPointer<MediaService> guard(this);
 
     ApiClient *client = m_serverManager->activeClient();
     if (!client)
@@ -2728,6 +2740,8 @@ QCoro::Task<void> MediaService::reportPlaybackStopped(QString itemId, QString me
     {
         co_await client->post("/Sessions/Playing/Stopped", payload);
         qDebug() << "[API] Playback Stopped successfully. SessionId:" << playSessionId;
+        if (guard)
+            Q_EMIT guard->playbackStopped(profile.id, profile.userId);
     }
     catch (const std::exception &e)
     {

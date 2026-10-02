@@ -1,4 +1,6 @@
 #include "views/media/playerview.h"
+#include "views/user/dashboardview.h"
+#include "components/horizontallistviewgallery.h"
 #include "components/playermediaswitcherpanel.h"
 #include "components/mpvhttpstreamrelay.h"
 #include "config/config_keys.h"
@@ -88,7 +90,8 @@ public:
 
     QJsonObject item(const QString &id) const {
         return {{"Id", id}, {"Name", id}, {"Type", "Movie"}, {"MediaSources", sources()},
-                {"RunTimeTicks", 600000000}, {"UserData", QJsonObject{{"PlaybackPositionTicks", 20000000}}}};
+                {"RunTimeTicks", unknownDuration ? 0 : 600000000},
+                {"UserData", QJsonObject{{"PlaybackPositionTicks", 20000000}}}};
     }
 
     void start(PlayerView &view) {
@@ -136,11 +139,22 @@ public:
                           {"MediaSources", sources()}};
             } else if (url.path() == "/Sessions/Playing") {
                 starts.append(payload);
+            } else if (url.path() == "/Sessions/Playing/Progress") {
+                progress.append(payload);
             } else if (url.path() == "/Sessions/Playing/Stopped") {
                 stops.append(payload);
+                if (holdStopResponse) {
+                    pendingStop = socket;
+                    return;
+                }
             } else if (url.path().endsWith("/Items/Resume")) {
-                result = {{"Items", QJsonArray{item("test-media"), item("next-media")}},
-                          {"TotalRecordCount", 2}};
+                ++resumeRequests;
+                if (unknownDuration) {
+                    result = {{"Items", resumeItems}, {"TotalRecordCount", resumeItems.size()}};
+                } else {
+                    result = {{"Items", QJsonArray{item("test-media"), item("next-media")}},
+                              {"TotalRecordCount", 2}};
+                }
             } else if (url.path().contains("/Images/")) {
                 status = 404;
             } else if (url.path().contains("/Items/")) {
@@ -158,10 +172,16 @@ public:
     QTcpServer server;
     QEmbyCore &core;
     bool rateLimited = true;
+    bool unknownDuration = false;
+    bool holdStopResponse = false;
+    QPointer<QTcpSocket> pendingStop;
+    QJsonArray resumeItems;
+    int resumeRequests = 0;
     int sessionCount = 0;
     QList<QUrl> streamRequests;
     QList<QByteArray> streamUserAgents;
     QList<QJsonObject> starts;
+    QList<QJsonObject> progress;
     QList<QJsonObject> stops;
     QByteArray media;
 };
@@ -231,6 +251,77 @@ private slots:
         QTest::addColumn<bool>("keyboardRetry");
         QTest::newRow("retry-button") << false;
         QTest::newRow("space-key") << true;
+    }
+
+    void unknownStrmDurationSurvivesStopAndRefreshesDashboard() {
+        QOpenGLContext gl;
+        if (!gl.create())
+            QSKIP("The libmpv integration test needs OpenGL and a display.");
+
+        PlaybackFixture fixture(*m_core);
+        fixture.rateLimited = false;
+        fixture.unknownDuration = true;
+        fixture.holdStopResponse = true;
+        const QString serverId = m_core->serverManager()->activeProfile().id;
+        for (const char *key : {ConfigKeys::ShowLatestAdded, ConfigKeys::ShowRecommended,
+                               ConfigKeys::ShowCompletedWatching, ConfigKeys::ShowMediaLibraries,
+                               ConfigKeys::ShowEachLibrary})
+            ConfigStore::instance()->set(ConfigKeys::forServer(serverId, key), false);
+
+        DashboardView dashboard(m_core);
+        PlayerView view(m_core);
+        view.resize(1000, 700);
+        view.show();
+        auto *mpv = view.findChild<MpvWidget *>();
+        QTRY_VERIFY(mpv->isValid());
+        QSignalSpy loaded(mpv->controller(), &MpvController::fileLoaded);
+        fixture.start(view);
+        QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 1, 10000);
+        QTRY_VERIFY(!fixture.progress.isEmpty()
+                    && fixture.progress.last().value("RunTimeTicks").toInteger() == 600000000);
+        view.pausePlayback();
+        QTRY_VERIFY(!view.isMediaPlaying());
+        QVERIFY(QMetaObject::invokeMethod(&view, "onSliderMoved", Q_ARG(int, 20)));
+        QTRY_VERIFY(mpv->controller()->getProperty("time-pos").toDouble() >= 19.0);
+        // MPV can clear duration during teardown; the final report still needs it.
+        mpv->durationChanged(0.0);
+
+        QSignalSpy stopped(m_core->mediaService(), &MediaService::playbackStopped);
+        view.prepareForStackLeave();
+        view.hide();
+        QTRY_VERIFY(fixture.pendingStop);
+        QCOMPARE(stopped.count(), 0);
+        QCOMPARE(fixture.progress.last().value("RunTimeTicks").toInteger(), 600000000);
+        QVERIFY(fixture.stops.last().value("PositionTicks").toInteger() >= 190000000);
+
+        dashboard.resize(1000, 700);
+        dashboard.show();
+        QTRY_VERIFY(fixture.resumeRequests > 0);
+        const auto galleries = dashboard.findChildren<HorizontalListViewGallery *>();
+        const auto containsResume = [&] {
+            for (const auto *gallery : galleries) {
+                for (const MediaItem &entry : gallery->items()) {
+                    if (entry.id == QStringLiteral("test-media"))
+                        return true;
+                }
+            }
+            return false;
+        };
+        QVERIFY(!containsResume());
+        const int initialRequests = fixture.resumeRequests;
+
+        // Emulate the server committing progress after the first home-page fetch.
+        auto resumed = fixture.item(QStringLiteral("test-media"));
+        resumed["RunTimeTicks"] = fixture.progress.last().value("RunTimeTicks");
+        resumed["UserData"] = QJsonObject{{"PlaybackPositionTicks", fixture.stops.last().value("PositionTicks")},
+                                          {"Played", false}, {"PlayedPercentage", 33.3}};
+        fixture.resumeItems = QJsonArray{resumed};
+        fixture.pendingStop->write("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
+        fixture.pendingStop->disconnectFromHost();
+        QTRY_COMPARE(stopped.count(), 1);
+        QCOMPARE(stopped.first().at(0).toString(), serverId);
+        QTRY_VERIFY(fixture.resumeRequests > initialRequests);
+        QTRY_VERIFY(containsResume());
     }
 
     void windowRestoreKeepsSessionAndRelay_data() {

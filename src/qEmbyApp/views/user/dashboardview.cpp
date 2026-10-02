@@ -78,6 +78,15 @@ DashboardView::DashboardView(QEmbyCore* core, QWidget* parent)
 
     setupUi();
 
+    if (m_core && m_core->mediaService()) {
+        connect(m_core->mediaService(), &MediaService::playbackStopped, this,
+                [this](const QString& serverId, const QString& userId) {
+                    const ServerProfile profile = m_core->serverManager()->activeProfile();
+                    if (isVisible() && profile.id == serverId && profile.userId == userId)
+                        launchDashboardTask(loadDashboardData());
+                });
+    }
+
     connect(m_libraryListView, &QListView::clicked, this,
             [this](const QModelIndex& index) {
                 const MediaItem item = m_libraryModel->getItem(index);
