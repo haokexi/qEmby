@@ -9,6 +9,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include "api/useragentmanager.h"
 #include <QPointer>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -269,6 +270,7 @@ void MpvHttpStreamRelay::processRequest(QTcpSocket *socket, const QByteArray &re
     {
         return;
     }
+    UserAgentManager::instance()->applyToRequest(request, m_serverId);
 
     it->request = request;
     it->headOnly = method == "HEAD";

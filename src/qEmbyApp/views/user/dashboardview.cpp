@@ -8,6 +8,7 @@
 #include "../../utils/dashboardrequestlimitutils.h"
 #include "../../utils/dashboardsectionorderutils.h"
 #include "../../utils/mediaitemutils.h"
+#include "../../utils/resumeitemresolver.h"
 #include "../../utils/smoothscrollcontroller.h"
 #include "../../utils/textwraputils.h"
 #include "../media/mediacarddelegate.h"
@@ -22,14 +23,12 @@
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QScrollBar>
-#include <QSet>
 #include <QShowEvent>
 #include <QStyle>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <utility>
-#include <vector>
 #include <config/config_keys.h>
 #include <config/configstore.h>
 #include <qembycore.h>
@@ -88,6 +87,10 @@ DashboardView::DashboardView(QEmbyCore* core, QWidget* parent)
     connect(ConfigStore::instance(), &ConfigStore::valueChanged, this,
             [this](const QString& key, const QVariant&) {
                 const QString sid = currentServerId();
+                if (key == ConfigKeys::forServer(sid, ConfigKeys::HiddenHomeLibraries)) {
+                    applyLibraryVisibility();
+                    return;
+                }
                 const QString customOrderEnabledKey = ConfigKeys::forServer(
                     sid, ConfigKeys::CustomHomeSectionOrderEnabled);
                 const QString homeSectionOrderKey =
@@ -405,6 +408,7 @@ void DashboardView::clearLibraryGallerySections()
         }
 
         m_librarySectionsLayout->removeWidget(section);
+        section->hide();
         section->deleteLater();
     }
 
@@ -413,6 +417,7 @@ void DashboardView::clearLibraryGallerySections()
 
 void DashboardView::clearDashboardState(bool resetScrollPositions)
 {
+    m_homeLibraries.clear();
     clearDashboardGallery(m_resumeGallery);
     clearDashboardGallery(m_latestGallery);
     clearDashboardGallery(m_recommendGallery);
@@ -636,6 +641,7 @@ void DashboardView::adjustLibraryGridHeight()
     const int imgHeight = qRound(imgWidth * 9.0 / 16.0);
     const int cellHeight = imgHeight + 16 + 26;
 
+    m_libraryModel->setImageMaxWidth(qRound(imgWidth * devicePixelRatioF()));
     m_libraryDelegate->setTileSize(QSize(cellWidth, cellHeight));
     m_libraryListView->doItemsLayout();
 
@@ -878,7 +884,8 @@ QCoro::Task<void> DashboardView::loadDashboardData()
 
     if (m_resumeSection) {
         m_resumeSection->setVisible(showResume);
-        if (showResume && shimmerEnabled && m_resumeGallery) {
+        if (showResume && shimmerEnabled && m_resumeGallery &&
+            m_resumeGallery->itemCount() == 0) {
             m_resumeGallery->setLoading(true);
         }
     }
@@ -907,11 +914,12 @@ QCoro::Task<void> DashboardView::loadDashboardData()
         m_librarySectionsContainer->setVisible(showEachLibrary);
     }
 
-    loadResumeSection(showResume, generation);
-    loadLatestSection(showLatest, generation);
-    loadRecommendedSection(showRecommended, generation);
-    loadCompletedSection(showCompleted, generation);
-    loadLibrarySections(showLibraries, showEachLibrary, generation);
+    launchDashboardTask(loadResumeSection(showResume, generation));
+    launchDashboardTask(loadLatestSection(showLatest, generation));
+    launchDashboardTask(loadRecommendedSection(showRecommended, generation));
+    launchDashboardTask(loadCompletedSection(showCompleted, generation));
+    launchDashboardTask(
+        loadLibrarySections(showLibraries, showEachLibrary, generation));
     co_return;
 }
 
@@ -1018,7 +1026,10 @@ QCoro::Task<void> DashboardView::loadResumeSection(bool show, int generation)
     }
 
     QPointer<DashboardView> guard(this);
-    auto* mediaService = m_core->mediaService();
+    QPointer<MediaService> mediaService(m_core->mediaService());
+    if (!mediaService) {
+        co_return;
+    }
     const int requestLimit =
         DashboardRequestLimitUtils::homeSectionRequestLimit(
             currentServerId(), ConfigKeys::ContinueWatchingRequestLimit, 0);
@@ -1026,65 +1037,66 @@ QCoro::Task<void> DashboardView::loadResumeSection(bool show, int generation)
     try {
         QList<MediaItem> rawResumeItems =
             co_await mediaService->getResumeItems(requestLimit);
+        if (!guard || !mediaService || m_loadGeneration != generation) {
+            co_return;
+        }
+
+        QList<MediaItem> resumeItems =
+            ResumeItemResolver::buildFallbackItems(
+                std::move(rawResumeItems), QStringLiteral("dashboard"));
         if (!guard || m_loadGeneration != generation) {
             co_return;
         }
 
-        QList<MediaItem> resumeItems;
-        QSet<QString> seenSeriesIds;
-        QStringList seriesIdsToFetch;
-        QList<int> insertIndices;
-        QList<MediaItem> resumeContextItems;
+        const QList<MediaItem> existingResumeItems =
+            m_resumeGallery ? m_resumeGallery->items() : QList<MediaItem> {};
 
-        for (const MediaItem& item : rawResumeItems) {
-            if (item.type == "Episode" && !item.seriesId.isEmpty()) {
-                if (seenSeriesIds.contains(item.seriesId)) {
-                    continue;
-                }
+        if (resumeItems.isEmpty()) {
+            m_resumeGallery->setItems({});
+            m_resumeGallery->setLoading(false);
+            if (m_resumeSection) {
+                m_resumeSection->setVisible(false);
+            }
+            qDebug() << "[DashboardView] resume response is empty"
+                     << "| generation=" << generation
+                     << "| clearedExisting=" << !existingResumeItems.isEmpty();
+            co_return;
+        }
 
-                seenSeriesIds.insert(item.seriesId);
-                seriesIdsToFetch.append(item.seriesId);
-                insertIndices.append(resumeItems.size());
-                resumeContextItems.append(item);
-                resumeItems.append(MediaItem {});
-            } else {
-                resumeItems.append(MediaItemUtils::withResumeContext(item, item));
+        
+        
+        
+        
+        if (existingResumeItems.isEmpty()) {
+            m_resumeGallery->setItems(resumeItems);
+            if (m_resumeSection) {
+                m_resumeSection->setVisible(!resumeItems.isEmpty());
             }
         }
 
-        std::vector<QCoro::Task<MediaItem>> detailTasks;
-        detailTasks.reserve(seriesIdsToFetch.size());
-        for (const QString& seriesId : seriesIdsToFetch) {
-            detailTasks.push_back(mediaService->getItemDetail(seriesId));
+        qDebug() << "[DashboardView] prepared resume fallbacks"
+                 << "| generation=" << generation
+                 << "| retainedExisting=" << !existingResumeItems.isEmpty()
+                 << "| display=" << resumeItems.size();
+
+        resumeItems = co_await ResumeItemResolver::enrichSeriesCards(
+            mediaService.data(), std::move(resumeItems),
+            QStringLiteral("dashboard"));
+        if (!guard || m_loadGeneration != generation) {
+            co_return;
         }
 
-        for (int i = 0; i < static_cast<int>(detailTasks.size()); ++i) {
-            try {
-                MediaItem seriesItem = co_await std::move(detailTasks[i]);
-                if (!guard || m_loadGeneration != generation) {
-                    co_return;
-                }
-
-                resumeItems[insertIndices[i]] =
-                    MediaItemUtils::withResumeContext(seriesItem,
-                                                      resumeContextItems[i]);
-            } catch (...) {
-                if (!guard || m_loadGeneration != generation) {
-                    co_return;
-                }
-            }
-        }
-
-        for (int i = resumeItems.size() - 1; i >= 0; --i) {
-            if (resumeItems[i].id.isEmpty()) {
-                resumeItems.removeAt(i);
-            }
-        }
-
+        resumeItems = ResumeItemResolver::preserveExistingResolvedCards(
+            std::move(resumeItems), existingResumeItems,
+            QStringLiteral("dashboard"));
         m_resumeGallery->setItems(resumeItems);
         if (m_resumeSection) {
             m_resumeSection->setVisible(!resumeItems.isEmpty());
         }
+
+        qDebug() << "[DashboardView] committed enriched resume items"
+                 << "| generation=" << generation
+                 << "| display=" << resumeItems.size();
     } catch (const std::exception& e) {
         if (!guard || m_loadGeneration != generation) {
             co_return;
@@ -1095,7 +1107,8 @@ QCoro::Task<void> DashboardView::loadResumeSection(bool show, int generation)
             m_resumeGallery->setLoading(false);
         }
         if (m_resumeSection) {
-            m_resumeSection->setVisible(false);
+            m_resumeSection->setVisible(
+                m_resumeGallery && m_resumeGallery->itemCount() > 0);
         }
     }
 }
@@ -1230,229 +1243,183 @@ QCoro::Task<void> DashboardView::loadLibrarySections(bool showLibraries,
                                                      int generation)
 {
     if (!showLibraries && !showEachLibrary) {
-        if (m_libraryGridSection) {
-            m_libraryGridSection->setVisible(false);
-        }
-        if (m_libraryModel) {
-            m_libraryModel->setItems(QList<MediaItem> {});
-        }
-        clearLibraryGallerySections();
-        if (m_librarySectionsContainer) {
-            m_librarySectionsContainer->setVisible(false);
-        }
-        adjustLibraryGridHeight();
+        applyLibraryVisibility();
         co_return;
     }
 
     QPointer<DashboardView> guard(this);
-    auto* mediaService = m_core->mediaService();
+    try {
+        const QList<MediaItem> views = co_await m_core->mediaService()->getUserViews();
+        if (!guard || m_loadGeneration != generation) {
+            co_return;
+        }
+        
+        if (!views.isEmpty() || m_homeLibraries.isEmpty()) {
+            m_homeLibraries = views;
+        } else {
+            qDebug() << "[DashboardView] Keeping cached home libraries after empty response"
+                     << "| cachedCount=" << m_homeLibraries.size();
+        }
+        applyLibraryVisibility(true);
+    } catch (const std::exception& e) {
+        if (!guard || m_loadGeneration != generation) {
+            co_return;
+        }
+        qDebug() << "[DashboardView] Library refresh failed; applying local visibility"
+                 << "| cachedCount=" << m_homeLibraries.size() << "| error=" << e.what();
+        applyLibraryVisibility();
+    }
+}
+
+void DashboardView::applyLibraryVisibility(bool refreshItems)
+{
     const QString sid = currentServerId();
-    const int previousLibraryCount =
-        m_libraryModel ? m_libraryModel->rowCount() : 0;
-    const int previousEachLibrarySectionCount = m_libraryGalleries.size();
-    bool hasReusableEachLibrarySections =
-        previousEachLibrarySectionCount > 0;
-    if (hasReusableEachLibrarySections) {
-        for (MediaSectionWidget* section : std::as_const(m_libraryGalleries)) {
-            if (!section || section->property("serverId").toString() != sid) {
-                hasReusableEachLibrarySections = false;
+    auto *store = ConfigStore::instance();
+    const bool showLibraries = store->get<bool>(
+        ConfigKeys::forServer(sid, ConfigKeys::ShowMediaLibraries), true);
+    const bool showEachLibrary = store->get<bool>(
+        ConfigKeys::forServer(sid, ConfigKeys::ShowEachLibrary), true);
+    const QStringList hiddenLibraries = store->get<QStringList>(
+        ConfigKeys::forServer(sid, ConfigKeys::HiddenHomeLibraries));
+    QList<MediaItem> userViews;
+    for (const MediaItem &view : std::as_const(m_homeLibraries)) {
+        if (!hiddenLibraries.contains(view.id)) {
+            userViews.append(view);
+        }
+    }
+    qDebug() << "[DashboardView] Applying local library visibility"
+             << "| totalCount=" << m_homeLibraries.size()
+             << "| visibleCount=" << userViews.size()
+             << "| showLibraries=" << showLibraries
+             << "| showEachLibrary=" << showEachLibrary;
+
+    m_libraryModel->setItems(showLibraries ? userViews : QList<MediaItem>{});
+    m_libraryGridSection->setVisible(showLibraries && !userViews.isEmpty());
+    adjustLibraryGridHeight();
+    if (!showEachLibrary || userViews.isEmpty()) {
+        clearLibraryGallerySections();
+        m_librarySectionsContainer->hide();
+        return;
+    }
+
+    QPointer<MediaService> mediaService(m_core->mediaService());
+    const MediaCardDelegate::CardStyle libGalleryStyle =
+        dashboardGalleryStyle();
+    const int libGalleryHeight = dashboardGalleryHeight();
+
+    bool canReuse = (m_libraryGalleries.size() == userViews.size());
+    if (canReuse) {
+        for (int i = 0; i < userViews.size(); ++i) {
+            if (!m_libraryGalleries[i] ||
+                m_libraryGalleries[i]->property("libraryId").toString() !=
+                    userViews[i].id ||
+                m_libraryGalleries[i]->property("libraryName").toString() !=
+                    userViews[i].name) {
+                canReuse = false;
                 break;
             }
         }
     }
 
-    try {
-        const QList<MediaItem> userViews = co_await mediaService->getUserViews();
-        if (!guard || m_loadGeneration != generation) {
-            co_return;
-        }
+    if (!canReuse) {
+        clearLibraryGallerySections();
 
-        qDebug() << "[DashboardView] loadLibrarySections fetched"
-                 << "| generation=" << generation
-                 << "| showLibraries=" << showLibraries
-                 << "| showEachLibrary=" << showEachLibrary
-                 << "| previousLibraryCount=" << previousLibraryCount
-                 << "| previousEachLibrarySectionCount="
-                 << previousEachLibrarySectionCount
-                 << "| userViewCount=" << userViews.size();
-
-        if (!showLibraries) {
-            if (m_libraryGridSection) {
-                m_libraryGridSection->setVisible(false);
-            }
-            if (m_libraryModel) {
-                m_libraryModel->setItems(QList<MediaItem> {});
-            }
-            adjustLibraryGridHeight();
-        } else {
-            if (!userViews.isEmpty() || previousLibraryCount == 0) {
-                m_libraryModel->setItems(userViews);
-            } else {
-                qDebug()
-                    << "[DashboardView] keeping previous library grid items "
-                       "because fetched views are unexpectedly empty";
-            }
-            if (m_libraryGridSection) {
-                m_libraryGridSection->setVisible(!userViews.isEmpty() ||
-                                                previousLibraryCount > 0);
-            }
-            QTimer::singleShot(0, this, &DashboardView::adjustLibraryGridHeight);
-        }
-
-        if (!showEachLibrary) {
-            clearLibraryGallerySections();
-            if (m_librarySectionsContainer) {
-                m_librarySectionsContainer->setVisible(false);
-            }
-            co_return;
-        }
-
-        if (userViews.isEmpty()) {
-            if (hasReusableEachLibrarySections) {
-                qDebug()
-                    << "[DashboardView] keeping previous each-library sections "
-                       "because fetched views are unexpectedly empty";
-                if (m_librarySectionsContainer) {
-                    m_librarySectionsContainer->setVisible(true);
-                }
-            } else {
-                clearLibraryGallerySections();
-                if (m_librarySectionsContainer) {
-                    m_librarySectionsContainer->setVisible(false);
-                }
-            }
-            co_return;
-        }
-
-        const MediaCardDelegate::CardStyle libGalleryStyle =
-            dashboardGalleryStyle();
-        const int libGalleryHeight = dashboardGalleryHeight();
-
-        bool canReuse = (m_libraryGalleries.size() == userViews.size());
-        if (canReuse) {
-            for (int i = 0; i < userViews.size(); ++i) {
-                if (!m_libraryGalleries[i] ||
-                    m_libraryGalleries[i]->property("libraryId").toString() !=
-                        userViews[i].id ||
-                    m_libraryGalleries[i]->property("libraryName").toString() !=
-                        userViews[i].name) {
-                    canReuse = false;
-                    break;
-                }
-            }
-        }
-
-        if (!canReuse) {
-            clearLibraryGallerySections();
-
-            for (const MediaItem& view : userViews) {
-                auto* section = new MediaSectionWidget(view.name, m_core,
-                                                       m_librarySectionsContainer);
-                section->setProperty("serverId", sid);
-                section->setProperty("libraryId", view.id);
-                section->setProperty("libraryName", view.name);
-
-                if (section->layout()) {
-                    section->layout()->setContentsMargins(0, 20, 0, 0);
-                }
-
-                auto* seeAllBtn = new QPushButton(tr("See All >"), section);
-                seeAllBtn->setObjectName("section-more-btn");
-                seeAllBtn->setCursor(Qt::PointingHandCursor);
-
-                const QString libraryId = view.id;
-                const QString libraryName = view.name;
-                connect(seeAllBtn, &QPushButton::clicked, this,
-                        [this, libraryId, libraryName]() {
-                            Q_EMIT navigateToLibrary(libraryId, libraryName);
-                        });
-
-                QWidget* headerContainer =
-                    section->findChild<QWidget*>("section-header");
-                if (headerContainer && headerContainer->layout()) {
-                    headerContainer->layout()->addWidget(seeAllBtn);
-                }
-
-                if (section->gallery() && section->gallery()->listView()) {
-                    section->gallery()->listView()->setProperty(
-                        "isHorizontalListView", true);
-                    section->gallery()->listView()->viewport()->installEventFilter(
-                        this);
-                }
-
-                connect(section, &MediaSectionWidget::itemClicked, this,
-                        [this](const MediaItem& item) {
-                            if (isLibraryNavigationItem(item)) {
-                                Q_EMIT navigateToLibrary(item.id, item.name);
-                            } else {
-                                Q_EMIT navigateToDetail(item.id, item.name, item);
-                            }
-                        });
-                connect(section, &MediaSectionWidget::playRequested, this,
-                        &BaseView::handlePlayRequested);
-                connect(section, &MediaSectionWidget::favoriteRequested, this,
-                        &BaseView::handleFavoriteRequested);
-                connect(section, &MediaSectionWidget::moreMenuRequested, this,
-                        &BaseView::handleMoreMenuRequested);
-
-                m_librarySectionsLayout->addWidget(section);
-                m_libraryGalleries.append(section);
-            }
-        }
-
-        for (int i = 0; i < userViews.size(); ++i) {
-            MediaSectionWidget* section = m_libraryGalleries.value(i, nullptr);
-            if (!section) {
-                continue;
-            }
-
-            const MediaItem& view = userViews[i];
+        for (const MediaItem& view : userViews) {
+            auto* section = new MediaSectionWidget(view.name, m_core,
+                                                   m_librarySectionsContainer);
             section->setProperty("serverId", sid);
             section->setProperty("libraryId", view.id);
             section->setProperty("libraryName", view.name);
-            section->setTitle(view.name);
-            section->setCardStyle(libGalleryStyle);
-            section->setGalleryHeight(libGalleryHeight);
+
+            if (section->layout()) {
+                section->layout()->setContentsMargins(0, 20, 0, 0);
+            }
+
+            auto* seeAllBtn = new QPushButton(tr("See All >"), section);
+            seeAllBtn->setObjectName("section-more-btn");
+            seeAllBtn->setCursor(Qt::PointingHandCursor);
 
             const QString libraryId = view.id;
-            section->loadAsync(
-                [mediaService, libraryId]() -> QCoro::Task<QList<MediaItem>> {
-                    co_return co_await mediaService->getLibraryItems(
-                        libraryId, "DateCreated", "Descending", "",
-                        "Movie,Series", 0, 20, true);
-                });
+            const QString libraryName = view.name;
+            connect(seeAllBtn, &QPushButton::clicked, this,
+                    [this, libraryId, libraryName]() {
+                        Q_EMIT navigateToLibrary(libraryId, libraryName);
+                    });
+
+            QWidget* headerContainer =
+                section->findChild<QWidget*>("section-header");
+            if (headerContainer && headerContainer->layout()) {
+                headerContainer->layout()->addWidget(seeAllBtn);
+            }
+
+            if (section->gallery() && section->gallery()->listView()) {
+                section->gallery()->listView()->setProperty(
+                    "isHorizontalListView", true);
+                section->gallery()->listView()->viewport()->installEventFilter(
+                    this);
+            }
+
+            connect(section, &MediaSectionWidget::itemClicked, this,
+                    [this](const MediaItem& item) {
+                        if (isLibraryNavigationItem(item)) {
+                            Q_EMIT navigateToLibrary(item.id, item.name);
+                        } else {
+                            Q_EMIT navigateToDetail(item.id, item.name, item);
+                        }
+                    });
+            connect(section, &MediaSectionWidget::playRequested, this,
+                    &BaseView::handlePlayRequested);
+            connect(section, &MediaSectionWidget::favoriteRequested, this,
+                    &BaseView::handleFavoriteRequested);
+            connect(section, &MediaSectionWidget::moreMenuRequested, this,
+                    &BaseView::handleMoreMenuRequested);
+
+            m_librarySectionsLayout->addWidget(section);
+            m_libraryGalleries.append(section);
+        }
+    }
+
+    for (int i = 0; i < userViews.size(); ++i) {
+        MediaSectionWidget* section = m_libraryGalleries.value(i, nullptr);
+        if (!section) {
+            continue;
         }
 
-        if (m_librarySectionsContainer) {
-            m_librarySectionsContainer->setVisible(true);
-        }
-    } catch (const std::exception& e) {
-        if (!guard || m_loadGeneration != generation) {
-            co_return;
-        }
+        const MediaItem& view = userViews[i];
+        section->setProperty("serverId", sid);
+        section->setProperty("libraryId", view.id);
+        section->setProperty("libraryName", view.name);
+        section->setTitle(view.name);
+        section->setCardStyle(libGalleryStyle);
+        section->setGalleryHeight(libGalleryHeight);
 
-        qDebug() << "[DashboardView] loadLibrarySections failed"
-                 << "| generation=" << generation
-                 << "| showLibraries=" << showLibraries
-                 << "| showEachLibrary=" << showEachLibrary
-                 << "| previousLibraryCount=" << previousLibraryCount
-                 << "| previousEachLibrarySectionCount="
-                 << previousEachLibrarySectionCount
-                 << "| error=" << e.what();
+        const QString libraryId = view.id;
+        if (!refreshItems && canReuse) {
+            continue;
+        }
+        launchDashboardTask(section->loadAsync(
+            [mediaService, libraryId]() -> QCoro::Task<QList<MediaItem>> {
+                if (!mediaService) {
+                    co_return QList<MediaItem>{};
+                }
+                co_return co_await mediaService->getLibraryItems(
+                    libraryId, "DateCreated", "Descending", "",
+                    "Movie,Series", 0, 20, true);
+            }));
+    }
 
-        if (showLibraries && previousLibraryCount > 0 && m_libraryGridSection) {
-            m_libraryGridSection->setVisible(true);
-            QTimer::singleShot(0, this, &DashboardView::adjustLibraryGridHeight);
-        }
-        if (showEachLibrary && hasReusableEachLibrarySections &&
-            m_librarySectionsContainer) {
-            m_librarySectionsContainer->setVisible(true);
-        }
+    if (m_librarySectionsContainer) {
+        m_librarySectionsContainer->setVisible(true);
     }
 }
 
 void DashboardView::onMediaItemUpdated(const MediaItem& item)
 {
+    for (MediaItem &library : m_homeLibraries) {
+        if (library.id == item.id) {
+            library = item;
+        }
+    }
     if (m_resumeGallery) {
         const bool canRemoveFromResume =
             MediaItemUtils::canRemoveFromResume(item);
@@ -1502,6 +1469,10 @@ void DashboardView::onMediaItemUpdated(const MediaItem& item)
 
 void DashboardView::onMediaItemRemoved(const QString& itemId)
 {
+    for (auto it = m_homeLibraries.begin(); it != m_homeLibraries.end();) {
+        if (it->id == itemId) it = m_homeLibraries.erase(it);
+        else ++it;
+    }
     if (m_resumeGallery) {
         m_resumeGallery->removeItem(itemId);
     }

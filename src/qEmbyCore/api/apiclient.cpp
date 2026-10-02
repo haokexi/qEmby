@@ -32,6 +32,7 @@ NetworkRequestOptions ApiClient::requestOptions() const {
     options.ignoreSslErrors = m_profile.ignoreSslVerification;
     options.restrictRedirectsToSameHost = true;
     options.maximumResponseBytes = kMaximumApiResponseBytes;
+    options.userAgentServerId = m_profile.id;
     return options;
 }
 

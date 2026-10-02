@@ -1,4 +1,5 @@
 #include "networkmanager.h"
+#include "useragentmanager.h"
 #include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonParseError>
@@ -11,6 +12,7 @@
 #include <qcoronetwork.h>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 
@@ -81,6 +83,42 @@ bool tryParseJsonWithEncoding(const QByteArray &responseData,
     return parseError.error == QJsonParseError::NoError;
 }
 
+QString safeUrlForLog(QUrl url)
+{
+    url.setUserInfo(QString());
+    url.setQuery(QString());
+    url.setFragment(QString());
+    
+    
+    QString path = url.path();
+    const int apiIndex = path.indexOf(QStringLiteral("/api/v2/"),
+                                      0, Qt::CaseInsensitive);
+    if (apiIndex > 0) {
+        const int tokenSlash = path.lastIndexOf('/', apiIndex - 1);
+        if (tokenSlash >= 0 && tokenSlash + 1 < apiIndex) {
+            path.replace(tokenSlash + 1, apiIndex - tokenSlash - 1,
+                         QStringLiteral("<redacted>"));
+            url.setPath(path);
+        }
+    }
+    return url.toString(QUrl::RemoveUserInfo | QUrl::RemoveQuery |
+                        QUrl::RemoveFragment);
+}
+
+QString safeNetworkErrorForLog(QString errorText, const QUrl &requestUrl)
+{
+    const QString fullUrl = requestUrl.toString();
+    if (!fullUrl.isEmpty()) {
+        errorText.replace(fullUrl, safeUrlForLog(requestUrl));
+    }
+
+    static const QRegularExpression sensitiveQueryValue(
+        QStringLiteral("([?&](?:api_key|access_token|token|X-Emby-Token)=)[^&\\s\\\"]+"),
+        QRegularExpression::CaseInsensitiveOption);
+    errorText.replace(sensitiveQueryValue, QStringLiteral("\\1<redacted>"));
+    return errorText;
+}
+
 } 
 
 NetworkManager::NetworkManager(QObject *parent)
@@ -115,12 +153,22 @@ void NetworkManager::applyRequestOptions(QNetworkRequest& request,
                          options.restrictRedirectsToSameHost
                              ? QNetworkRequest::UserVerifiedRedirectPolicy
                              : QNetworkRequest::NoLessSafeRedirectPolicy);
+    if (!options.userAgentServerId.isEmpty()) {
+        UserAgentManager::instance()->applyToRequest(
+            request, options.userAgentServerId);
+    } else {
+        UserAgentManager::instance()->applyToRequest(request);
+    }
+
+    if (options.timeoutMs > 0) {
+        request.setTransferTimeout(options.timeoutMs);
+    }
 
     if (options.ignoreSslErrors &&
         request.url().scheme().compare(QStringLiteral("https"),
                                        Qt::CaseInsensitive) == 0) {
         qWarning() << "[NetworkManager] SSL certificate verification is DISABLED"
-                   << "| url:" << request.url().toString();
+                   << "| url:" << safeUrlForLog(request.url());
     }
 }
 
@@ -209,7 +257,7 @@ void NetworkManager::attachReplyHandlers(QNetworkReply* reply,
 
                 qWarning() << "[NetworkManager]" << requestKind
                            << "TLS validation errors"
-                           << "| url:" << reply->url().toString()
+                           << "| url:" << safeUrlForLog(reply->url())
                            << "| ignoreSslErrors:" << options.ignoreSslErrors
                            << "| errors:" << summary;
 
@@ -217,7 +265,7 @@ void NetworkManager::attachReplyHandlers(QNetworkReply* reply,
                     qWarning() << "[NetworkManager]" << requestKind
                                << "Ignoring TLS validation errors for trusted "
                                   "server"
-                               << "| url:" << reply->url().toString();
+                               << "| url:" << safeUrlForLog(reply->url());
                     reply->ignoreSslErrors();
                     reply->setProperty("sslErrorsIgnored", true);
                 }
@@ -243,7 +291,7 @@ QString NetworkManager::buildReplyErrorMessage(QNetworkReply* reply,
     QString errorMsg =
         QString(NetworkManager::tr("请求失败(HTTP %1): %2"))
             .arg(httpStatus)
-            .arg(reply->errorString());
+            .arg(safeNetworkErrorForLog(reply->errorString(), reply->url()));
 
     const QString sslSummary = reply->property("sslErrorsSummary").toString();
     if (!sslSummary.isEmpty() &&
@@ -267,7 +315,7 @@ QJsonObject NetworkManager::parseReply(QNetworkReply* reply) {
         int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         QByteArray responseBody = reply->readAll();
         qWarning() << "[NetworkManager] Request FAILED"
-                   << "| url:" << reply->url().toString()
+                   << "| url:" << safeUrlForLog(reply->url())
                    << "| httpStatus:" << httpStatus
                    << "| qtError:" << reply->error()
                    << "| errorString:" << reply->errorString()
@@ -344,7 +392,7 @@ QJsonObject NetworkManager::parseReply(QNetworkReply* reply) {
 
     if (!hasValidJson) {
         qWarning() << "[NetworkManager] JSON parse failed"
-                   << "| url:" << reply->url().toString()
+                   << "| url:" << safeUrlForLog(reply->url())
                    << "| contentType:" << contentType
                    << "| charset:" << charsetName
                    << "| parseError:" << parseError.errorString()
@@ -356,7 +404,7 @@ QJsonObject NetworkManager::parseReply(QNetworkReply* reply) {
     if (!charsetName.isEmpty() || parseSource != QStringLiteral("raw-utf8") ||
         replacementCount > 0) {
         qDebug() << "[NetworkManager] JSON decoded"
-                 << "| url:" << reply->url().toString()
+                 << "| url:" << safeUrlForLog(reply->url())
                  << "| contentType:" << contentType
                  << "| charset:" << charsetName
                  << "| source:" << parseSource
@@ -390,6 +438,36 @@ QCoro::Task<QJsonObject> NetworkManager::get(
     co_return parseReply(reply);
 }
 
+QCoro::Task<QList<NetworkJsonResult>> NetworkManager::getBatch(
+    QList<NetworkJsonGetRequest> requests)
+{
+    QList<QNetworkReply *> replies;
+    replies.reserve(requests.size());
+    for (const NetworkJsonGetRequest &item : std::as_const(requests)) {
+        QNetworkRequest request{QUrl(item.url)};
+        applyHeaders(request, item.headers);
+        applyRequestOptions(request, item.options);
+        request.setHeader(QNetworkRequest::ContentTypeHeader, QVariant());
+        QNetworkReply *reply = m_networkManager->get(request);
+        attachReplyHandlers(reply, item.options, QStringLiteral("GET_BATCH"));
+        replies.append(reply);
+    }
+
+    QList<NetworkJsonResult> results;
+    results.reserve(replies.size());
+    for (QNetworkReply *reply : std::as_const(replies)) {
+        NetworkJsonResult result;
+        co_await reply;
+        try {
+            result.object = parseReply(reply);
+        } catch (const std::exception &e) {
+            result.errorMessage = QString::fromUtf8(e.what()).trimmed();
+        }
+        results.append(result);
+    }
+    co_return results;
+}
+
 
 QCoro::Task<QString> NetworkManager::getText(
     const QString& url, const QMap<QString, QString>& headers,
@@ -414,7 +492,7 @@ QString NetworkManager::parseReplyAsText(QNetworkReply* reply) {
     if (reply->error() != QNetworkReply::NoError) {
         int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         qWarning() << "[NetworkManager] getText FAILED"
-                   << "| url:" << reply->url().toString()
+                   << "| url:" << safeUrlForLog(reply->url())
                    << "| httpStatus:" << httpStatus
                    << "| errorString:" << reply->errorString()
                    << "| ignoreSslErrors:"
@@ -458,6 +536,60 @@ QCoro::Task<QByteArray> NetworkManager::getBytes(
     co_return parseReplyAsBytes(reply, QStringLiteral("getBytes"));
 }
 
+QCoro::Task<QByteArray> NetworkManager::getBytesLimited(
+    QString url,
+    QMap<QString, QString> headers,
+    qint64 maximumBytes,
+    NetworkRequestOptions options)
+{
+    if (maximumBytes <= 0) {
+        co_return QByteArray{};
+    }
+
+    QNetworkRequest request{QUrl(url)};
+    applyHeaders(request, headers);
+    applyRequestOptions(request, options);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QVariant());
+    request.setRawHeader(
+        "Range",
+        QStringLiteral("bytes=0-%1").arg(maximumBytes - 1).toLatin1());
+
+    QNetworkReply *reply = m_networkManager->get(request);
+    attachReplyHandlers(reply, options, QStringLiteral("GET_LIMITED"));
+
+    QByteArray data;
+    data.reserve(static_cast<qsizetype>(qMin<qint64>(maximumBytes, 16 * 1024 * 1024)));
+    const auto consumeAvailable = [reply, &data, maximumBytes]() {
+        const qint64 remaining = maximumBytes - data.size();
+        if (remaining > 0) {
+            data.append(reply->read(remaining));
+        }
+        if (data.size() >= maximumBytes && !reply->isFinished()) {
+            reply->abort();
+        }
+    };
+    const QMetaObject::Connection readyReadConnection =
+        connect(reply, &QNetworkReply::readyRead, reply, consumeAvailable);
+
+    co_await reply;
+    disconnect(readyReadConnection);
+    consumeAvailable();
+
+    const bool stoppedAfterLimit =
+        reply->error() == QNetworkReply::OperationCanceledError &&
+        data.size() >= maximumBytes;
+    if (reply->error() != QNetworkReply::NoError && !stoppedAfterLimit) {
+        const int httpStatus =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QString errorMessage = buildReplyErrorMessage(reply, httpStatus);
+        reply->deleteLater();
+        throw std::runtime_error(errorMessage.toStdString());
+    }
+
+    reply->deleteLater();
+    co_return data;
+}
+
 QByteArray NetworkManager::parseReplyAsBytes(QNetworkReply* reply,
                                              const QString& requestKind) {
     reply->deleteLater();
@@ -465,7 +597,7 @@ QByteArray NetworkManager::parseReplyAsBytes(QNetworkReply* reply,
     if (reply->error() != QNetworkReply::NoError) {
         int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         qWarning() << "[NetworkManager]" << requestKind << "FAILED"
-                   << "| url:" << reply->url().toString()
+                   << "| url:" << safeUrlForLog(reply->url())
                    << "| httpStatus:" << httpStatus
                    << "| errorString:" << reply->errorString()
                    << "| ignoreSslErrors:"

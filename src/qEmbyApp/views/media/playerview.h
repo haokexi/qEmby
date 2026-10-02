@@ -7,6 +7,7 @@
 #include "../../components/loadingoverlay.h" 
 #include "../../components/playerdanmakucontroller.h"
 #include <models/media/mediaitem.h>
+#include <models/media/playbackinfo.h>
 #include <services/introdb/introdbservice.h>
 
 #include <QVariant>
@@ -35,6 +36,8 @@ class PlayerOsdLayer;
 class PlayerLongPressHandler;
 class PlayerStatisticsOverlay;
 class NativeDanmakuOverlay;
+class DanmakuProgressSlider;
+class QVBoxLayout;
 
 class PlayerView : public BaseView {
     Q_OBJECT
@@ -50,6 +53,7 @@ public:
     bool isMediaPlaying() const;
     void pausePlayback();
     void resumePlayback();
+    void restoreAfterWindowShow(bool shouldResumePlaying);
     void stopAndReport(); 
 
 signals:
@@ -193,6 +197,12 @@ private:
 
     
     static QCoro::Task<void> executeFetchLogo(QPointer<PlayerView> safeThis, QEmbyCore* core, QString mediaId);
+    static QCoro::Task<void> resolveDanmakuPlaybackContext(
+        QPointer<PlayerView> safeThis,
+        QPointer<QEmbyCore> core,
+        QString mediaId,
+        QString fallbackTitle,
+        MediaSourceInfo sourceInfo);
 
     MpvWidget *m_mpvWidget;
     NativeDanmakuOverlay *m_nativeDanmakuOverlay = nullptr;
@@ -200,6 +210,7 @@ private:
     
     QWidget *m_topHUD;
     QWidget *m_bottomHUD;
+    QVBoxLayout *m_bottomControlsLayout = nullptr;
     PlayerStatisticsOverlay *m_statisticsOverlay;
     LoadingOverlay *m_loadingOverlay; 
     QWidget *m_playbackErrorPanel = nullptr;
@@ -235,7 +246,7 @@ private:
 
     
     QLabel *m_currentTimeLabel;
-    ModernSlider *m_progressSlider;
+    DanmakuProgressSlider *m_progressSlider = nullptr;
     QLabel *m_totalTimeLabel;
 
     
@@ -293,6 +304,8 @@ private:
     double m_currentPosition;
     double m_totalDuration = 0.0; 
     double m_pendingSeekSeconds = 0.0;
+    bool m_windowRestorePending = false;
+    bool m_windowRestoreShouldPlay = false;
     double m_osdSeekPreviewPosition = -1.0;
     
     double m_currentSpeed = 1.0;

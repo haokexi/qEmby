@@ -8442,4 +8442,16 @@ Adresse: %2</translation>
     </message>
 </context>
 
+<context>
+    <name>TrayManager</name>
+    <message>
+        <source>Show qEmby</source>
+        <translation>Afficher qEmby</translation>
+    </message>
+    <message>
+        <source>Quit</source>
+        <translation>Quitter</translation>
+    </message>
+</context>
+
 </TS>

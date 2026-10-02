@@ -19,6 +19,9 @@ struct QEMBYCORE_EXPORT DanmakuServerDefinition {
     QString appId;
     QString appSecret;
     
+    
+    QString accessToken;
+    
     QString contentScope;
     bool builtIn = false;
     bool enabled = true;
@@ -41,6 +44,7 @@ struct QEMBYCORE_EXPORT DanmakuProviderConfig {
     QString endpointName;
     QString appId;
     QString appSecret;
+    QString accessToken;
     
     QString contentScope;
     bool enabled = true;
@@ -62,6 +66,14 @@ struct QEMBYCORE_EXPORT DanmakuMediaContext {
     int episodeNumber = -1;
     qint64 durationMs = 0;
     QString path;
+    QString fileName;
+    qint64 fileSize = 0;
+    QString fileHash;
+    QDateTime mediaModifiedAt;
+    
+    
+    QString mediaUrl;
+    QStringList genres;
     QVariantMap providerIds;
 
     QString cacheKey() const {
@@ -101,6 +113,16 @@ struct QEMBYCORE_EXPORT DanmakuMatchCandidate {
     double score = 0.0;
     QString matchReason;
     int commentCount = 0;
+
+    bool isHashMatch() const {
+        return matchReason.compare(QStringLiteral("hash"),
+                                   Qt::CaseInsensitive) == 0;
+    }
+
+    bool isProviderIdMatch() const {
+        return matchReason.compare(QStringLiteral("tmdb"),
+                                   Qt::CaseInsensitive) == 0;
+    }
 
     bool isValid() const {
         return !provider.isEmpty() && !targetId.isEmpty();
@@ -144,14 +166,14 @@ Q_DECLARE_METATYPE(DanmakuComment)
 
 struct QEMBYCORE_EXPORT DanmakuRenderOptions {
     bool enabled = true;
-    double opacity = 0.72;
+    double opacity = 0.8;
     double fontScale = 1.0;
-    int fontWeight = 400;
+    int fontWeight = 500;
     double outlineSize = 3.0;
-    double shadowOffset = 1.0;
-    int areaPercent = 70;
+    double shadowOffset = 0.8;
+    int areaPercent = 35;
     int density = 100;
-    double speedScale = 0.5;
+    double speedScale = 1.0;
     int offsetMs = 0;
     bool hideScroll = false;
     bool hideTop = false;

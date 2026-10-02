@@ -1,5 +1,6 @@
 #include "views/media/playerview.h"
 #include "components/playermediaswitcherpanel.h"
+#include "components/mpvhttpstreamrelay.h"
 #include "config/config_keys.h"
 #include "config/configstore.h"
 #include "models/media/playerlaunchcontext.h"
@@ -61,6 +62,9 @@ public:
         profile.url = QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort());
         profile.userId = QStringLiteral("test-user");
         profile.accessToken = QStringLiteral("test-token");
+        profile.useGlobalUserAgent = false;
+        profile.userAgent.enabled = true;
+        profile.userAgent.value = QStringLiteral("qEmby-playback-test");
         core.serverManager()->addServer(profile);
         core.serverManager()->setActiveServer(profile.id);
 
@@ -104,6 +108,10 @@ public:
         int status = 200;
         if (url.path().endsWith("/stream")) {
             streamRequests.append(url);
+            for (const QByteArray &line : headers.split('\n')) {
+                if (line.toLower().startsWith("user-agent:"))
+                    streamUserAgents.append(line.mid(line.indexOf(':') + 1).trimmed());
+            }
             if (rateLimited) {
                 status = 429;
                 body = "Too Many Requests";
@@ -152,6 +160,7 @@ public:
     bool rateLimited = true;
     int sessionCount = 0;
     QList<QUrl> streamRequests;
+    QList<QByteArray> streamUserAgents;
     QList<QJsonObject> starts;
     QList<QJsonObject> stops;
     QByteArray media;
@@ -222,6 +231,64 @@ private slots:
         QTest::addColumn<bool>("keyboardRetry");
         QTest::newRow("retry-button") << false;
         QTest::newRow("space-key") << true;
+    }
+
+    void windowRestoreKeepsSessionAndRelay_data() {
+        QTest::addColumn<bool>("resumePlaying");
+        QTest::newRow("restore-playing") << true;
+        QTest::newRow("restore-paused") << false;
+    }
+
+    void windowRestoreKeepsSessionAndRelay() {
+        QFETCH(bool, resumePlaying);
+        QOpenGLContext gl;
+        if (!gl.create())
+            QSKIP("The libmpv integration test needs OpenGL and a display.");
+
+        PlaybackFixture fixture(*m_core);
+        fixture.rateLimited = false;
+        PlayerView view(&fixture.core);
+        view.setWindowFlag(Qt::Tool);
+        view.setAttribute(Qt::WA_ShowWithoutActivating);
+        view.resize(1000, 700);
+        view.show();
+        auto *mpv = view.findChild<MpvWidget *>();
+        auto *relay = mpv->findChild<MpvHttpStreamRelay *>();
+        QVERIFY(relay);
+        QTRY_VERIFY(mpv->isValid());
+        QSignalSpy loaded(mpv->controller(), &MpvController::fileLoaded);
+        fixture.start(view);
+        QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 1, 10000);
+        QTRY_VERIFY(mpv->controller()->getProperty("time-pos").toDouble() >= 1.0);
+        view.pausePlayback();
+        QTRY_VERIFY(!view.isMediaPlaying());
+        const double position = mpv->controller()->getProperty("time-pos").toDouble();
+        const QString session = fixture.starts.first().value("PlaySessionId").toString();
+        QVERIFY(!session.isEmpty());
+        const qsizetype previousRequests = fixture.streamRequests.size();
+
+        view.restoreAfterWindowShow(resumePlaying);
+        QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 2, 10000);
+        QTRY_COMPARE(mpv->controller()->getProperty("pause").toBool(), !resumePlaying);
+        QTRY_VERIFY(mpv->controller()->getProperty("time-pos").toDouble() >= position - 0.5);
+        QVERIFY(fixture.streamRequests.size() > previousRequests);
+        QVERIFY(relay->hasStartedSuccessfulMediaResponse());
+        QCOMPARE(fixture.starts.size(), 1);
+        QVERIFY(fixture.stops.isEmpty());
+        for (const QUrl &request : fixture.streamRequests)
+            QCOMPARE(QUrlQuery(request).queryItemValue("PlaySessionId"), session);
+        QCOMPARE(fixture.streamUserAgents.size(), fixture.streamRequests.size());
+        for (const QByteArray &userAgent : fixture.streamUserAgents)
+            QCOMPARE(userAgent, QByteArray("qEmby-playback-test"));
+
+        // Reusing the player must report the old session once and load the new one.
+        fixture.start(view);
+        QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 3, 10000);
+        QTRY_COMPARE(fixture.stops.size(), 1);
+        QCOMPARE(fixture.starts.size(), 2);
+        QVERIFY(fixture.starts.last().value("PlaySessionId").toString() != session);
+        view.prepareForStackLeave();
+        QTRY_COMPARE(fixture.stops.size(), 2);
     }
 
     void rateLimitRecovery() {

@@ -34,6 +34,11 @@ target_link_libraries(qemby_media_genre_filter_test PRIVATE Qt6::Test qEmbyCore)
 add_test(NAME qemby_media_genre_filter_test COMMAND qemby_media_genre_filter_test)
 set_tests_properties(qemby_media_genre_filter_test PROPERTIES TIMEOUT 30)
 
+qt_add_executable(qemby_network_options_test networkoptionstest.cpp)
+target_link_libraries(qemby_network_options_test PRIVATE Qt6::Test qEmbyCore)
+add_test(NAME qemby_network_options_test COMMAND qemby_network_options_test)
+set_tests_properties(qemby_network_options_test PROPERTIES TIMEOUT 30)
+
 qt_add_executable(qemby_playback_failure_test
     playbackfailuretest.cpp
     ../src/qEmbyApp/resources/resources.qrc
@@ -43,3 +48,16 @@ target_link_libraries(qemby_playback_failure_test PRIVATE qEmbyAppObjects Qt6::T
 qemby_link_libmpv(qemby_playback_failure_test)
 add_test(NAME qemby_playback_failure_test COMMAND qemby_playback_failure_test)
 set_tests_properties(qemby_playback_failure_test PROPERTIES TIMEOUT 90)
+
+qt_add_executable(qemby_library_navigation_test
+    librarynavigationtest.cpp
+    ../src/qEmbyApp/resources/resources.qrc
+)
+target_include_directories(qemby_library_navigation_test PRIVATE ../src/qEmbyApp)
+target_link_libraries(qemby_library_navigation_test PRIVATE qEmbyAppObjects Qt6::Test)
+qemby_link_libmpv(qemby_library_navigation_test)
+add_test(NAME qemby_library_navigation_test COMMAND qemby_library_navigation_test)
+set_tests_properties(qemby_library_navigation_test PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    TIMEOUT 30
+)

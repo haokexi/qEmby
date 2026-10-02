@@ -8,6 +8,7 @@
 #include "managers/thememanager.h" 
 #include "managers/searchhistorymanager.h"
 #include "managers/traymanager.h"  
+#include "managers/updatemanager.h"
 #include "config/configstore.h"    
 #include "config/config_keys.h"    
 #include "utils/contextmenuutils.h"
@@ -35,6 +36,10 @@
 #include <services/auth/authservice.h>
 #include "components/themetransitionwidget.h"
 #include "components/moderntoast.h" 
+#include "components/modernmessagebox.h"
+#include "components/updatedialog.h"
+#include "components/updateindicatorbutton.h"
+#include "components/updateprogressdialog.h"
 #include <QPropertyAnimation>
 #include <QEasingCurve>
 #include <QFocusEvent>
@@ -42,6 +47,8 @@
 #include <QtMath>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QOpenGLWidget>
+#include <QWindow>
 #include <QDialog>
 
 #include <QWKWidgets/widgetwindowagent.h>
@@ -84,21 +91,40 @@ static inline void emulateLeaveEvent(QWidget *widget) {
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
+#if defined(Q_OS_WIN) && (QT_VERSION >= QT_VERSION_CHECK(6, 4, 0))
+    
+    
+    
+    
+    auto *compositionAnchor = new QOpenGLWidget(this);
+    compositionAnchor->setObjectName(QStringLiteral("playerCompositionAnchor"));
+    compositionAnchor->setFixedSize(1, 1);
+    compositionAnchor->setFocusPolicy(Qt::NoFocus);
+    compositionAnchor->setAttribute(Qt::WA_TransparentForMouseEvents);
+    compositionAnchor->hide();
+    qInfo() << "[MainWindow] OpenGL composition prepared before native window creation"
+            << "| nativeWindowCreated:" << testAttribute(Qt::WA_WState_Created);
+#endif
     m_core = new QEmbyCore(this);
 
     
     m_trayManager = new TrayManager(this);
     connect(m_trayManager, &TrayManager::showMainRequested, this, [this]() {
-        showNormal();
+        
+        
+        
+        show();
+        raise();
         activateWindow();
 
         
-        
-        if (m_wasPausedByTray) {
+        if (m_hadPlayerWhenHiddenToTray) {
+            const bool shouldResumePlaying = m_wasPausedByTray;
+            m_hadPlayerWhenHiddenToTray = false;
             m_wasPausedByTray = false;
-            QTimer::singleShot(500, this, [this]() {
+            QTimer::singleShot(0, this, [this, shouldResumePlaying]() {
                 if (auto *player = m_homeView->activePlayerView()) {
-                    player->resumePlayback();
+                    player->restoreAfterWindowShow(shouldResumePlaying);
                 }
             });
         }
@@ -337,11 +363,26 @@ MainWindow::MainWindow(QWidget *parent)
 
     windowBar->setCenterWidget(centerContainer);
 
+    
+    m_updateButton = new UpdateIndicatorButton(centerContainer);
+    m_updateButton->setObjectName(QStringLiteral("titlebar-update-button"));
+    m_updateButton->setCursor(Qt::PointingHandCursor);
+    m_updateButton->setToolTip(tr("A new qEmby version is available"));
+    m_updateButton->hide();
+    connect(m_updateButton, &UpdateIndicatorButton::clicked, this,
+            &MainWindow::showUpdateConfirmation);
+#if defined(Q_OS_MACOS) || defined(Q_OS_MAC)
+    centerLayout->insertWidget(1, m_updateButton, 0, Qt::AlignVCenter);
+#else
+    centerLayout->insertWidget(0, m_updateButton, 0, Qt::AlignVCenter);
+#endif
+
 
     agent->setTitleBar(windowBar);
 
     agent->setHitTestVisible(themeButton, true);
     agent->setHitTestVisible(m_globalSearchBox, true); 
+    agent->setHitTestVisible(m_updateButton, true);
     agent->setSystemButton(QWK::WindowAgentBase::WindowIcon, iconButton);
 #if !defined(Q_OS_MACOS) && !defined(Q_OS_MAC)
     agent->setSystemButton(QWK::WindowAgentBase::Minimize, minButton);
@@ -358,6 +399,37 @@ MainWindow::MainWindow(QWidget *parent)
 #endif
 
     setMenuWidget(windowBar);
+
+    auto *updateManager = UpdateManager::instance();
+    connect(updateManager, &UpdateManager::updateAvailable, this,
+            [this](const UpdateInfo &info, UpdateManager::CheckMode mode) {
+                if (mode != UpdateManager::CheckMode::Automatic) {
+                    return;
+                }
+                m_availableUpdate = info;
+                m_hasAvailableUpdate = true;
+                m_updateButton->setToolTip(
+                    tr("qEmby %1 is available").arg(info.version));
+                m_updateButton->show();
+            });
+    connect(updateManager, &UpdateManager::updateOpened, this,
+            [this](const QString &) {
+                m_hasAvailableUpdate = false;
+                m_updateButton->hide();
+            });
+    connect(ConfigStore::instance(), &ConfigStore::valueChanged, this,
+            [this](const QString &key, const QVariant &value) {
+                if (key == ConfigKeys::CheckForUpdates && !value.toBool()) {
+                    m_hasAvailableUpdate = false;
+                    m_updateButton->hide();
+                }
+            });
+
+    if (ConfigStore::instance()->get<bool>(ConfigKeys::CheckForUpdates, true)) {
+        QTimer::singleShot(1500, updateManager, [updateManager]() {
+            updateManager->checkForUpdates(UpdateManager::CheckMode::Automatic);
+        });
+    }
 
     
     m_viewStack = new QStackedWidget(this);
@@ -711,6 +783,39 @@ MainWindow::MainWindow(QWidget *parent)
                     hideGlobalSearchTransientUi();
                 }
             });
+}
+
+void MainWindow::showUpdateConfirmation()
+{
+    if (!m_hasAvailableUpdate) {
+        return;
+    }
+
+    UpdateDialog dialog(m_availableUpdate, UpdateDialog::Mode::Automatic, this);
+    dialog.exec();
+    if (dialog.decision() == UpdateDialog::Decision::Update) {
+        UpdateProgressDialog::startUpdate(m_availableUpdate, this);
+        return;
+    }
+
+    if (dialog.decision() == UpdateDialog::Decision::RemindLater) {
+        qInfo() << "MainWindow: update reminder dismissed for this session"
+                << "| version=" << m_availableUpdate.version;
+        m_hasAvailableUpdate = false;
+        m_updateButton->hide();
+        return;
+    }
+
+    if (dialog.decision() != UpdateDialog::Decision::IgnoreVersion) {
+        return;
+    }
+
+    ConfigStore::instance()->set(ConfigKeys::IgnoredUpdateVersion,
+                                 m_availableUpdate.version);
+    qInfo() << "MainWindow: update ignored"
+            << "| version=" << m_availableUpdate.version;
+    m_hasAvailableUpdate = false;
+    m_updateButton->hide();
 }
 
 MainWindow::~MainWindow() {}
@@ -1139,6 +1244,14 @@ void MainWindow::navigateToLogin() {
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
+    if (watched == this && (event->type() == QEvent::WinIdChange ||
+                            event->type() == QEvent::Show || event->type() == QEvent::Hide)) {
+        
+        qInfo() << "[MainWindow] Window lifecycle | event:" << event->type()
+                << "| nativeId:" << static_cast<quintptr>(internalWinId())
+                << "| visible:" << isVisible() << "| state:" << windowState()
+                << "| surfaceType:" << (windowHandle() ? static_cast<int>(windowHandle()->surfaceType()) : -1);
+    }
     if (watched == qApp && event->type() == QEvent::ApplicationStateChange) {
         if (QGuiApplication::applicationState() != Qt::ApplicationActive) {
             hideGlobalSearchTransientUi();
@@ -1254,7 +1367,10 @@ void MainWindow::closeEvent(QCloseEvent *event)
     
     if (!m_realQuit && useTray && QSystemTrayIcon::isSystemTrayAvailable()) {
         
+        m_hadPlayerWhenHiddenToTray = false;
+        m_wasPausedByTray = false;
         if (auto *player = m_homeView->activePlayerView()) {
+            m_hadPlayerWhenHiddenToTray = true;
             if (player->isMediaPlaying()) {
                 player->pausePlayback();
                 m_wasPausedByTray = true;

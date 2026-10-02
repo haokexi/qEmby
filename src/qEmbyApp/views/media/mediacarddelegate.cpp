@@ -9,7 +9,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
-#include <QPixmapCache>
+#include "../../utils/imageutils.h"
 #include <QStyle>
 
 namespace
@@ -159,30 +159,27 @@ HoverButtonLayout buildHoverButtonLayout(const QRect &targetImgRect, bool showPl
     return layout;
 }
 
-QPixmap scaledCardPixmap(const MediaItem &item, const QPixmap &source, const QSize &targetSize,
-                         MediaCardDelegate::CardStyle style)
+void drawPlayedBadge(QPainter *painter, const QRect &targetImgRect, bool alignLeft)
 {
-    if (source.isNull() || targetSize.isEmpty())
+    const int checkSize = 16;
+    const int checkMargin = 4;
+    const int checkX = alignLeft ? targetImgRect.left() + checkMargin
+                                 : targetImgRect.right() - checkSize - checkMargin;
+    const QRect checkRect(checkX, targetImgRect.top() + checkMargin, checkSize, checkSize);
+
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(QColor(16, 185, 129, 140));
+    painter->drawRoundedRect(checkRect, checkSize / 2, checkSize / 2);
+
+    QIcon checkIcon(":/svg/dark/check.svg");
+    if (!checkIcon.isNull())
     {
-        return {};
+        checkIcon.paint(painter, checkRect.adjusted(3, 3, -3, -3), Qt::AlignCenter);
     }
 
-    const QString cacheKey = QStringLiteral("MediaCardDelegate:%1:%2:%3x%4:%5")
-                                 .arg(item.id)
-                                 .arg(source.cacheKey())
-                                 .arg(targetSize.width())
-                                 .arg(targetSize.height())
-                                 .arg(static_cast<int>(style));
-
-    QPixmap cached;
-    if (QPixmapCache::find(cacheKey, &cached))
-    {
-        return cached;
-    }
-
-    QPixmap scaled = source.scaled(targetSize, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-    QPixmapCache::insert(cacheKey, scaled);
-    return scaled;
+    painter->restore();
 }
 
 } 
@@ -407,10 +404,10 @@ void MediaCardDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
             QPainterPath path;
             path.addRoundedRect(baseImgRect, imgRadius, imgRadius);
             painter->setClipPath(path);
-            QPixmap scaled = scaledCardPixmap(item, poster, baseImgRect.size(), m_style);
-            int px = baseImgRect.x() + (baseImgRect.width() - scaled.width()) / 2;
-            int py = baseImgRect.y() + (baseImgRect.height() - scaled.height()) / 2;
-            painter->drawPixmap(px, py, scaled);
+            QPixmap scaled = ImageUtils::scaledCoverPixmap(poster, baseImgRect.size(), painter->device()->devicePixelRatioF());
+            qreal px = baseImgRect.x() + (baseImgRect.width() - scaled.deviceIndependentSize().width()) / 2;
+            qreal py = baseImgRect.y() + (baseImgRect.height() - scaled.deviceIndependentSize().height()) / 2;
+            painter->drawPixmap(QPointF(px, py), scaled);
             painter->setClipping(false);
         }
         else
@@ -445,6 +442,11 @@ void MediaCardDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
                 painter->setBrush(Qt::white);
                 painter->drawPath(playPath);
             }
+        }
+
+        if (item.userData.played)
+        {
+            drawPlayedBadge(painter, baseImgRect, false);
         }
 
         
@@ -597,11 +599,11 @@ void MediaCardDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
         painter->setClipPath(path);
 
         
-        QPixmap scaled = scaledCardPixmap(item, poster, targetImgRect.size(), m_style);
-        int px = targetImgRect.x() + (targetImgRect.width() - scaled.width()) / 2;
-        int py = targetImgRect.y() + (targetImgRect.height() - scaled.height()) / 2;
+        QPixmap scaled = ImageUtils::scaledCoverPixmap(poster, targetImgRect.size(), painter->device()->devicePixelRatioF());
+        qreal px = targetImgRect.x() + (targetImgRect.width() - scaled.deviceIndependentSize().width()) / 2;
+        qreal py = targetImgRect.y() + (targetImgRect.height() - scaled.deviceIndependentSize().height()) / 2;
 
-        painter->drawPixmap(px, py, scaled);
+        painter->drawPixmap(QPointF(px, py), scaled);
         painter->setClipping(false);
     }
     else
@@ -652,30 +654,7 @@ void MediaCardDelegate::paint(QPainter *painter, const QStyleOptionViewItem &opt
     
     if ((item.type == "Episode" || item.type == "Season") && item.userData.played)
     {
-        int checkSize = 16;
-        int checkMargin = 4;
-        int checkX = item.type == "Season"
-                         ? targetImgRect.left() + checkMargin
-                         : targetImgRect.right() - checkSize - checkMargin;
-        QRect checkRect(checkX, targetImgRect.top() + checkMargin, checkSize,
-                        checkSize);
-
-        painter->save();
-        painter->setRenderHint(QPainter::Antialiasing, true);
-
-        
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor(16, 185, 129, 140));
-        painter->drawRoundedRect(checkRect, checkSize / 2, checkSize / 2);
-
-        
-        QIcon checkIcon(":/svg/dark/check.svg");
-        if (!checkIcon.isNull()) {
-            checkIcon.paint(painter, checkRect.adjusted(3, 3, -3, -3),
-                           Qt::AlignCenter);
-        }
-
-        painter->restore();
+        drawPlayedBadge(painter, targetImgRect, item.type == "Season");
     }
 
     

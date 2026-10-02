@@ -44,6 +44,7 @@
 #include <QVariantAnimation>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrent>
+#include <algorithm>
 #include <memory>
 #include <qembycore.h>
 
@@ -115,6 +116,12 @@ PagePlayer::PagePlayer(QEmbyCore *core, QWidget *parent)
       ":/svg/dark/subtitle-lang.svg", tr("Preferred Subtitle Language"),
       tr("Rules are matched in order; choose presets or type custom keywords and press Enter"),
       subLangInput, ConfigKeys::PlayerSubLang, this, QVariant("auto")));
+
+  m_mainLayout->addWidget(new SettingsCard(
+      ":/svg/dark/subtitle-lang.svg", tr("Hide Subtitles"),
+      tr("Keep subtitles hidden for all videos until this option is turned off"),
+      new ModernSwitch(this), ConfigKeys::PlayerHideSubtitles, this,
+      QVariant(false)));
 
   
   auto *versionInput = new ModernTagInput(this);
@@ -529,11 +536,11 @@ PagePlayer::PagePlayer(QEmbyCore *core, QWidget *parent)
       };
 
   auto *danmakuRendererCombo = new ModernComboBox(this);
-  danmakuRendererCombo->addItem(tr("ASS Subtitle Track"),
-                                DanmakuRendererUtils::assTrackRendererId());
   danmakuRendererCombo->addItem(
       tr("Native Smooth Renderer"),
       DanmakuRendererUtils::nativeSmoothRendererId());
+  danmakuRendererCombo->addItem(tr("ASS Subtitle Track (Not Recommended)"),
+                                DanmakuRendererUtils::assTrackRendererId());
   addDanmakuSubPanel(
       ":/svg/dark/danmaku.svg", tr("Danmaku Renderer"),
       tr("Choose whether danmaku is rendered through the ASS subtitle track or qEmby's adaptive native renderer"),
@@ -591,26 +598,42 @@ PagePlayer::PagePlayer(QEmbyCore *core, QWidget *parent)
           serverName = selectedServer.baseUrl.trimmed();
         }
 
-        const QUrl serverUrl =
-            QUrl::fromUserInput(selectedServer.baseUrl.trimmed());
-        const bool isOfficialDandanPlay =
-            serverUrl.host().trimmed().compare(
-                QStringLiteral("api.dandanplay.net"), Qt::CaseInsensitive) == 0;
+        const bool isDandanPlay =
+            selectedServer.provider.trimmed().compare(
+                QStringLiteral("dandanplay"), Qt::CaseInsensitive) == 0;
+        const bool isDanmuApi =
+            selectedServer.provider.trimmed().compare(
+                QStringLiteral("danmu_api"), Qt::CaseInsensitive) == 0;
+        const QList<DanmakuServerDefinition> servers =
+            DanmakuSettings::loadServers(sid);
+        const int enabledServerCount =
+            std::count_if(servers.cbegin(), servers.cend(),
+                          [](const DanmakuServerDefinition &server) {
+                            return server.enabled;
+                          });
         QStringList summaryLines;
-        summaryLines.append(tr("Current server: %1").arg(serverName));
+        summaryLines.append(tr("Preferred server: %1").arg(serverName));
+        summaryLines.append(
+            tr("Server type: %1")
+                .arg(isDanmuApi ? tr("LogVar / danmu_api")
+                                : tr("DandanPlay")));
         summaryLines.append(
             tr("Address: %1").arg(selectedServer.baseUrl.trimmed()));
-        if (selectedServer.builtIn &&
-            selectedServer.contentScope.trimmed().compare(
-                QStringLiteral("anime"), Qt::CaseInsensitive) == 0) {
+        summaryLines.append(
+            tr("Enabled servers: %1").arg(enabledServerCount));
+        if (isDandanPlay && selectedServer.contentScope.trimmed().compare(
+                                QStringLiteral("anime"),
+                                Qt::CaseInsensitive) == 0) {
           summaryLines.append(tr("Supported content: Anime only"));
+        } else if (isDanmuApi) {
+          summaryLines.append(tr("Supported content: General video"));
         }
         if (!selectedServer.builtIn &&
             !selectedServer.description.trimmed().isEmpty()) {
           summaryLines.append(
               tr("Description: %1").arg(selectedServer.description.trimmed()));
         }
-        if (isOfficialDandanPlay &&
+        if (isDandanPlay && !selectedServer.builtIn &&
             (selectedServer.appId.trimmed().isEmpty() ||
              selectedServer.appSecret.trimmed().isEmpty())) {
           summaryLines.append(
