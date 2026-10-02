@@ -1,0 +1,3 @@
+#!/bin/sh
+qemby_bin_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+exec "$qemby_bin_dir/@QEMBY_LAUNCHER_RELATIVE_DIR@/qEmbyApp" "$@"

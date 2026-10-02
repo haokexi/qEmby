@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=qEmby
+Comment=Emby and Jellyfin media client
+Exec="@CMAKE_INSTALL_FULL_BINDIR@/qemby" %U
+Icon=qemby
+Terminal=false
+Categories=AudioVideo;Player;
+Keywords=Emby;Jellyfin;Media;Streaming;
+StartupWMClass=qEmbyApp

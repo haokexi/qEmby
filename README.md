@@ -166,6 +166,19 @@ cmake -B build -DCMAKE_PREFIX_PATH="/path/to/Qt6/lib/cmake"
 cmake --build build --config Release
 ```
 
+### 4. Linux 本地安装
+
+安装到当前用户目录，使用系统 Qt 6 和 libmpv：
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+cmake --build build --parallel
+cmake --install build
+"$HOME/.local/bin/qemby"
+```
+
+安装包含桌面启动项、图标和私有运行库，运行时不依赖源码或构建目录。
+
 > **提示：** 在 Windows 上使用 MSVC 时，也可以直接在 Qt Creator 或 Visual Studio 中打开 CMake 项目。
 
 ## 📁 项目结构
@@ -352,6 +365,20 @@ You can get libmpv from:
 cmake -B build -DCMAKE_PREFIX_PATH="/path/to/Qt6/lib/cmake"
 cmake --build build --config Release
 ```
+
+### 4. Install locally on Linux
+
+Install for the current user, using the system Qt 6 and libmpv libraries:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+cmake --build build --parallel
+cmake --install build
+"$HOME/.local/bin/qemby"
+```
+
+The installation includes a desktop entry, icon, and private runtime libraries.
+Running the installed application does not require the source or build directory.
 
 > **Tip:** On Windows with MSVC, you can also open the project in Qt Creator or Visual Studio with CMake support.
 
