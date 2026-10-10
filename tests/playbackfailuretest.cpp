@@ -89,6 +89,8 @@ public:
     }
 
     QJsonObject item(const QString &id) const {
+        if (items.contains(id))
+            return items.value(id);
         return {{"Id", id}, {"Name", id}, {"Type", "Movie"}, {"MediaSources", sources()},
                 {"RunTimeTicks", unknownDuration ? 0 : 600000000},
                 {"UserData", QJsonObject{{"PlaybackPositionTicks", 20000000}}}};
@@ -135,8 +137,10 @@ public:
         } else {
             QJsonObject result;
             if (url.path().endsWith("/PlaybackInfo")) {
+                const QString itemId = url.path().section('/', -2, -2);
                 result = {{"PlaySessionId", QStringLiteral("session-%1").arg(++sessionCount)},
-                          {"MediaSources", sources()}};
+                          {"MediaSources", playbackSources.value(
+                              itemId, item(itemId).value("MediaSources").toArray())}};
             } else if (url.path() == "/Sessions/Playing") {
                 starts.append(payload);
             } else if (url.path() == "/Sessions/Playing/Progress") {
@@ -147,6 +151,10 @@ public:
                     pendingStop = socket;
                     return;
                 }
+            } else if (url.path().endsWith("/Seasons")) {
+                result = {{"Items", QJsonArray{QJsonObject{{"Id", "test-season"}, {"Type", "Season"}}}}};
+            } else if (url.path().endsWith("/Episodes")) {
+                result = {{"Items", episodes}, {"TotalRecordCount", episodes.size()}};
             } else if (url.path().endsWith("/Items/Resume")) {
                 ++resumeRequests;
                 if (unknownDuration) {
@@ -175,6 +183,9 @@ public:
     bool unknownDuration = false;
     bool holdStopResponse = false;
     QPointer<QTcpSocket> pendingStop;
+    QHash<QString, QJsonObject> items;
+    QHash<QString, QJsonArray> playbackSources;
+    QJsonArray episodes;
     QJsonArray resumeItems;
     int resumeRequests = 0;
     int sessionCount = 0;
@@ -251,6 +262,112 @@ private slots:
         QTest::addColumn<bool>("keyboardRetry");
         QTest::newRow("retry-button") << false;
         QTest::newRow("space-key") << true;
+    }
+
+    void episodeSwitchKeepsSourcePosition_data() {
+        QTest::addColumn<int>("selectedIndex");
+        QTest::addColumn<int>("nextSourceCount");
+        QTest::addColumn<bool>("sameSeries");
+        QTest::addColumn<bool>("autoAdvance");
+        QTest::addColumn<bool>("rememberedNextSource");
+        QTest::addColumn<bool>("reorderedPlaybackInfo");
+        QTest::addColumn<int>("expectedIndex");
+        QTest::addColumn<bool>("sourceOnlyLaunch");
+        QTest::newRow("fourth-source") << 3 << 4 << true << false << false << false << 3 << false;
+        QTest::newRow("second-source") << 1 << 4 << true << false << false << false << 1 << false;
+        QTest::newRow("continuous-playback") << 3 << 4 << true << true << false << false << 3 << false;
+        QTest::newRow("position-overrides-old-selection") << 3 << 4 << true << false << true << false << 3 << false;
+        QTest::newRow("fewer-sources-use-rules") << 3 << 2 << true << false << false << false << 0 << false;
+        QTest::newRow("fewer-sources-use-remembered") << 3 << 2 << true << false << true << false << 1 << false;
+        QTest::newRow("different-series") << 3 << 4 << false << false << false << false << 0 << false;
+        QTest::newRow("metadata-refresh-keeps-position") << 3 << 4 << true << false << false << true << 3 << false;
+        QTest::newRow("detail-page-launch") << 3 << 4 << true << true << false << false << 3 << true;
+    }
+
+    void episodeSwitchKeepsSourcePosition() {
+        QFETCH(int, selectedIndex);
+        QFETCH(int, nextSourceCount);
+        QFETCH(bool, sameSeries);
+        QFETCH(bool, autoAdvance);
+        QFETCH(bool, rememberedNextSource);
+        QFETCH(bool, reorderedPlaybackInfo);
+        QFETCH(int, expectedIndex);
+        QFETCH(bool, sourceOnlyLaunch);
+        QOpenGLContext gl;
+        if (!gl.create())
+            QSKIP("The libmpv integration test needs OpenGL and a display.");
+
+        PlaybackFixture fixture(*m_core);
+        fixture.rateLimited = false;
+        auto episode = [&fixture](const QString &id, int number, int sourceCount,
+                                  const QString &seriesId) {
+            QJsonObject result = fixture.item(id);
+            result["Type"] = "Episode";
+            result["SeriesId"] = seriesId;
+            result["ParentIndexNumber"] = 2;
+            result["IndexNumber"] = number;
+            QJsonArray sources;
+            for (int i = 0; i < sourceCount; ++i) {
+                sources.append(QJsonObject{
+                    {"Id", QStringLiteral("%1-source-%2").arg(id).arg(i)},
+                    {"Name", QStringLiteral("%1 version %2").arg(id).arg(i)},
+                    {"Container", "strm"}, {"Size", 10000 - i * 1000}});
+            }
+            result["MediaSources"] = sources;
+            return result;
+        };
+        const auto current = episode("episode-3", 3, 4, "test-series");
+        const auto next = episode("episode-4", 4, nextSourceCount,
+                                  sameSeries ? "test-series" : "other-series");
+        fixture.items.insert("episode-3", current);
+        fixture.items.insert("episode-4", next);
+        fixture.episodes = QJsonArray{current, next};
+        if (reorderedPlaybackInfo) {
+            QJsonArray reordered;
+            const auto sources = current.value("MediaSources").toArray();
+            for (int i = sources.size() - 1; i >= 0; --i)
+                reordered.append(sources.at(i));
+            fixture.playbackSources.insert("episode-3", reordered);
+        }
+        const auto nextSources = next.value("MediaSources").toArray();
+        const QString expectedSourceId = nextSources.at(expectedIndex).toObject().value("Id").toString();
+        ConfigStore::instance()->set(ConfigKeys::PlayerPreferredVersion, QStringLiteral("size-desc"));
+        ConfigStore::instance()->set(ConfigKeys::PlayerContinuousPlay, true);
+        if (rememberedNextSource) {
+            ConfigStore::instance()->set(ConfigKeys::forServerMedia(
+                m_core->serverManager()->activeProfile().id, "episode-4",
+                ConfigKeys::PlayerSelectedMediaSource), nextSources.at(1).toObject().value("Id").toString());
+        }
+
+        PlayerView view(m_core);
+        view.setWindowFlag(Qt::Tool);
+        view.setAttribute(Qt::WA_ShowWithoutActivating);
+        view.resize(1000, 700);
+        view.show();
+        auto *mpv = view.findChild<MpvWidget *>();
+        QTRY_VERIFY(mpv->isValid());
+        QSignalSpy loaded(mpv->controller(), &MpvController::fileLoaded);
+        PlayerLaunchContext context;
+        context.mediaItem = MediaItem::fromJson(current);
+        context.selectedSource = context.mediaItem.mediaSources.at(selectedIndex);
+        view.playMedia(context.mediaItem.id, context.mediaItem.name,
+                       m_core->mediaService()->getStreamUrl(context.mediaItem.id, context.selectedSource),
+                       0, sourceOnlyLaunch ? QVariant::fromValue(context.selectedSource)
+                                           : QVariant::fromValue(context));
+        QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 1, 10000);
+        QCOMPARE(fixture.starts.first().value("MediaSourceId").toString(), context.selectedSource.id);
+
+        if (autoAdvance)
+            mpv->controller()->endOfFile(QStringLiteral("eof"));
+        else
+            view.findChild<PlayerMediaSwitcherPanel *>()->playRequested("episode-4", "episode-4", 0);
+        QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 2, 10000);
+        QCOMPARE(fixture.starts.last().value("ItemId").toString(), QStringLiteral("episode-4"));
+        QCOMPARE(fixture.starts.last().value("MediaSourceId").toString(), expectedSourceId);
+        QCOMPARE(QUrlQuery(fixture.streamRequests.last()).queryItemValue("mediaSourceId"), expectedSourceId);
+        view.prepareForStackLeave();
+        QTRY_COMPARE(fixture.stops.size(), 2);
+        ConfigStore::instance()->set(ConfigKeys::PlayerPreferredVersion, QString());
     }
 
     void unknownStrmDurationSurvivesStopAndRefreshesDashboard() {

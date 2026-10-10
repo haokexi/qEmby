@@ -62,6 +62,19 @@ namespace
 {
 constexpr int kHudAutoHideDelayMs = 1800;
 
+int mediaSourceIndex(const QList<MediaSourceInfo> &sources, const QString &sourceId)
+{
+    if (!sourceId.isEmpty())
+    {
+        for (int i = 0; i < sources.size(); ++i)
+        {
+            if (sources[i].id.compare(sourceId, Qt::CaseInsensitive) == 0)
+                return i;
+        }
+    }
+    return -1;
+}
+
 bool isDanmakuEnabledConfigKey(const QString &key)
 {
     static const QString kDanmakuEnabledSuffix =
@@ -2386,6 +2399,8 @@ QCoro::Task<void> PlayerView::switchFromMediaSwitcher(QString mediaId, QString t
     }
 
     const quint64 switchGeneration = ++m_playbackGeneration;
+    const QString previousSeriesId = m_isSeriesMode ? m_seriesId : QString();
+    const int previousSourceIndex = m_currentMediaSourceIndex;
     m_switcherPendingItemId = mediaId;
     m_switcherPendingTitle = title;
     m_switcherPendingTicks = startPositionTicks;
@@ -2423,12 +2438,25 @@ QCoro::Task<void> PlayerView::switchFromMediaSwitcher(QString mediaId, QString t
         QString mediaSourceId = detail.id;
         if (!detail.mediaSources.isEmpty())
         {
-            int sourceIdx = MediaSourcePreferenceUtils::resolvePreferredMediaSourceIndex(
-                detail.mediaSources,
-                ConfigStore::instance()->get<QString>(ConfigKeys::PlayerPreferredVersion).trimmed(),
-                MediaSourcePreferenceUtils::rememberedMediaSourceId(
-                    m_core->serverManager() ? m_core->serverManager()->activeProfile().id : QString(),
-                    detail.id));
+            int sourceIdx = -1;
+            if (!previousSeriesId.isEmpty() && detail.type == "Episode" &&
+                detail.seriesId == previousSeriesId && previousSourceIndex >= 0 &&
+                previousSourceIndex < detail.mediaSources.size())
+            {
+                sourceIdx = previousSourceIndex;
+                qDebug() << "[PlayerView] Keeping source position across episodes"
+                         << "| mediaId:" << detail.id
+                         << "| sourcePosition:" << sourceIdx + 1;
+            }
+            else
+            {
+                sourceIdx = MediaSourcePreferenceUtils::resolvePreferredMediaSourceIndex(
+                    detail.mediaSources,
+                    ConfigStore::instance()->get<QString>(ConfigKeys::PlayerPreferredVersion).trimmed(),
+                    MediaSourcePreferenceUtils::rememberedMediaSourceId(
+                        m_core->serverManager() ? m_core->serverManager()->activeProfile().id : QString(),
+                        detail.id));
+            }
             if (sourceIdx < 0 || sourceIdx >= detail.mediaSources.size())
             {
                 sourceIdx = 0;
@@ -5135,6 +5163,8 @@ void PlayerView::playMediaInternal(const QString &mediaId,
     {
         m_currentMediaSourceId = m_currentMediaSourceInfo.id;
     }
+    m_currentMediaSourceIndex = mediaSourceIndex(
+        m_currentMediaItem.mediaSources, m_currentMediaSourceId);
     const QString attemptedSourceId = m_currentMediaSourceId.trimmed();
     if (!attemptedSourceId.isEmpty())
     {
@@ -5544,6 +5574,13 @@ void PlayerView::playMediaInternal(const QString &mediaId,
         {
             safeThis->m_currentMediaItem.mediaSources =
                 playbackInfo.mediaSources;
+            // Preserve the position selected at launch if PlaybackInfo reorders
+            // the sources. Resolve it here only when the launch list was absent.
+            if (safeThis->m_currentMediaSourceIndex < 0)
+            {
+                safeThis->m_currentMediaSourceIndex = mediaSourceIndex(
+                    playbackInfo.mediaSources, sId);
+            }
             qDebug() << "[PlayerView] Playback sources refreshed at session "
                         "start"
                      << "| mediaId:" << mId

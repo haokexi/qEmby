@@ -288,6 +288,7 @@ private:
 
     QString m_currentMediaId;
     QString m_currentMediaSourceId; 
+    int m_currentMediaSourceIndex = -1;
     QString m_currentPlaySessionId; 
     MediaItem m_currentMediaItem;
     MediaSourceInfo m_currentMediaSourceInfo;
